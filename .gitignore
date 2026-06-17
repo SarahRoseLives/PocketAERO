@@ -53,3 +53,6 @@ app.*.map.json
 
 # IQ recordings
 *.wav
+
+# External packages (managed by pub)
+/packages/
