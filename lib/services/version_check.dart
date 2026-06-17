@@ -1,6 +1,7 @@
 import 'dart:convert';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:yaml/yaml.dart';
 import 'package:http/http.dart' as http;
-import 'package:package_info_plus/package_info_plus.dart';
 
 class VersionCheckService {
   static const _kUrl =
@@ -16,13 +17,19 @@ class VersionCheckService {
   String get localVersion => _localVersion;
   String get productUrl => _productUrl;
 
-  Future<void> init() async {
+  Future<void> _ensureInit() async {
     if (_localVersion.isNotEmpty) return;
-    final info = await PackageInfo.fromPlatform();
-    _localVersion = info.version;
+    try {
+      final yamlStr = await rootBundle.loadString('pubspec.yaml');
+      final doc = loadYaml(yamlStr);
+      _localVersion = doc['version']?.toString().split('+').first ?? '?';
+    } catch (_) {
+      _localVersion = '?';
+    }
   }
 
   Future<void> check() async {
+    await _ensureInit();
     try {
       final resp = await http.get(Uri.parse(_kUrl));
       if (resp.statusCode != 200) return;
@@ -36,7 +43,6 @@ class VersionCheckService {
     }
   }
 
-  /// Returns >0 if a > b, <0 if a < b, 0 if equal.
   static int _compareVersions(String a, String b) {
     final aParts = a.split('.').map((s) => int.tryParse(s) ?? 0).toList();
     final bParts = b.split('.').map((s) => int.tryParse(s) ?? 0).toList();

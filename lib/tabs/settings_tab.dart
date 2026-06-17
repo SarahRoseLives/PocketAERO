@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import '../providers/theme_provider.dart';
 import '../providers/radio_provider.dart';
 import '../providers/aero_provider.dart';
@@ -14,7 +13,6 @@ class SettingsTab extends StatefulWidget {
 
 class _SettingsTabState extends State<SettingsTab> {
   String _version = '...';
-  final _vc = VersionCheckService();
 
   @override void initState() {
     super.initState();
@@ -22,9 +20,9 @@ class _SettingsTabState extends State<SettingsTab> {
   }
 
   Future<void> _loadVersion() async {
-    final info = await PackageInfo.fromPlatform();
-    await _vc.init();
-    if (mounted) setState(() => _version = info.version);
+    final vc = VersionCheckService();
+    await vc.check();
+    if (mounted) setState(() => _version = vc.localVersion);
   }
 
   @override
@@ -151,7 +149,6 @@ class _SettingsTabState extends State<SettingsTab> {
         _tile(icon: Icons.info, title: 'Version', subtitle: _version,
           trailing: TextButton(onPressed: () async {
             final vc = VersionCheckService();
-            await vc.init();
             await vc.check();
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
