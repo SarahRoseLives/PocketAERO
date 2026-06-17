@@ -44,6 +44,7 @@ OqpskDemodulator::OqpskDemodulator()
     Fs           = 48000;
     lockingbw    = 10500;
     freq_center  = 8000;
+    afc_center_hz = 8000;
     fb           = 10500;
     signalthreshold = 0.5;
     SamplesPerSymbol = 2.0 * Fs / fb;
@@ -194,7 +195,27 @@ void OqpskDemodulator::setManualTune(double audio_hz)
     if (audio_hz > Fs / 2.0 - 500.0) audio_hz = Fs / 2.0 - 500.0;
     mixer_center.SetFreq(audio_hz, Fs);
     mixer2.SetFreq(audio_hz, Fs);
+    afc_center_hz = audio_hz;   /* shift AFC clamp anchor to new center */
     coarsefreqestimate->bigchange();
+    for (size_t j = 0; j < bbcycbuff.size(); j++)
+        bbcycbuff[j] = cpx_type(0, 0);
+}
+
+/* Like setManualTune but WITHOUT resetting the Costas loop (no bigchange).
+ * Only updates mixers and clears the symbol timing buffer — used during
+ * NCO/VFO drag so the Costas loop can keep tracking uninterrupted. */
+void OqpskDemodulator::centerFreqChanged(double audio_hz)
+{
+    if (audio_hz < 500.0) audio_hz = 500.0;
+    if (audio_hz > Fs / 2.0 - 500.0) audio_hz = Fs / 2.0 - 500.0;
+    mixer_center.SetFreq(audio_hz, Fs);
+    mixer2.SetFreq(audio_hz, Fs);
+    afc_center_hz = audio_hz;   /* shift AFC clamp anchor to new center */
+    double diff = mixer2.GetFreqHz() - mixer_center.GetFreqHz();
+    if (diff > lockingbw / 2.0)
+        mixer2.SetFreq(mixer_center.GetFreqHz() + lockingbw / 2.0);
+    if (diff < -lockingbw / 2.0)
+        mixer2.SetFreq(mixer_center.GetFreqHz() - lockingbw / 2.0);
     for (size_t j = 0; j < bbcycbuff.size(); j++)
         bbcycbuff[j] = cpx_type(0, 0);
 }
@@ -211,6 +232,7 @@ void OqpskDemodulator::setSettings(Settings s)
     lockingbw    = s.lockingbw;
     fb           = s.fb;
     freq_center  = s.freq_center;
+    afc_center_hz = s.freq_center;
     if (freq_center > ((Fs / 2.0) - (lockingbw / 2.0)))
         freq_center = (Fs / 2.0) - (lockingbw / 2.0);
     signalthreshold = s.signalthreshold;
@@ -323,14 +345,11 @@ void OqpskDemodulator::FreqOffsetEstimateSlot(double freq_offset_est)
         if (freqest_countdown > 0) freqest_countdown--;
         else {
             mixer_center.SetFreq(mixer2.GetFreqHz());
-            /* Clamp mixer_center to ±lockingbw/2 around freq_center (the
-             * intended audio position of the carrier) AND to a safe range
-             * in [500, Fs/2-500] Hz where the Hilbert USB has clean
-             * response. JAERO's original clamp used absolute Hz and broke
-             * when lockingbw >= Fs/2 — the two bounds crossed and pulled
-             * mixer_center to the wrong side of a real carrier. */
-            double lo = freq_center - lockingbw / 2.0;
-            double hi = freq_center + lockingbw / 2.0;
+            /* Clamp mixer_center to ±lockingbw/2 around afc_center_hz.
+             * afc_center_hz tracks the last setManualTune/centerFreqChanged
+             * position, so the AFC stays anchored to wherever the user tuned. */
+            double lo = afc_center_hz - lockingbw / 2.0;
+            double hi = afc_center_hz + lockingbw / 2.0;
             if (lo < 500.0) lo = 500.0;
             if (hi > Fs / 2.0 - 500.0) hi = Fs / 2.0 - 500.0;
             if (mixer_center.GetFreqHz() < lo) mixer_center.SetFreq(lo);

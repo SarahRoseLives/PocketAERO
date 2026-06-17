@@ -89,6 +89,9 @@ public:
     /* Override the AFC tuning from the UI (click-to-tune). audio_hz is
      * the new mixer_center frequency in audio Hz. AFC continues from there. */
     void setManualTune(double audio_hz);
+    /* Like setManualTune but WITHOUT resetting the Costas loop (no bigchange).
+     * Updates mixer_center/mixer2, resets symbol timing only. Used during drag. */
+    void centerFreqChanged(double audio_hz);
 
 private:
     oqpsk_soft_bits_cb soft_bits_cb;
@@ -119,7 +122,8 @@ private:
     int pointbuff_ptr;
 
     double Fs;
-    double freq_center;
+    double freq_center;       /* feedIQ upconversion reference (fixed at 8000 Hz) */
+    double afc_center_hz;     /* AFC clamp center (updated by setManualTune/centerFreqChanged) */
     double lockingbw;
     double fb;
     double signalthreshold;

@@ -822,6 +822,11 @@ void jaero_oqpsk_cont_set_manual_tune(jaero_oqpsk_cont_demod_t *d, double audio_
     if (d && d->demod) d->demod->setManualTune(audio_hz);
 }
 
+void jaero_oqpsk_cont_center_freq_changed(jaero_oqpsk_cont_demod_t *d, double audio_hz)
+{
+    if (d && d->demod) d->demod->centerFreqChanged(audio_hz);
+}
+
 void jaero_oqpsk_cont_set_afc(jaero_oqpsk_cont_demod_t *d, int on)
 {
     if (!d || !d->demod) return;

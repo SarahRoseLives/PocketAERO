@@ -2185,21 +2185,32 @@ void rf_set_aero_offset(double hz) {
     double inc = 2.0 * 3.14159265358979 * hz / (double)g_aero_rate;
     _nco_ci = cos(inc);
     _nco_si = sin(inc);
+    /* DO NOT reset _nco_c/_nco_s here — this is called every ~100ms
+     * during drag. Resetting the phasor on every call causes a phase
+     * jump that corrupts the constellation and prevents decode.
+     * Phasor drift is << 1e-6 over minutes; reset only on commit. */
 }
 
 void rf_set_aero_offset_commit(double hz) {
     double inc = 2.0 * 3.14159265358979 * hz / (double)g_aero_rate;
     _nco_ci = cos(inc);
     _nco_si = sin(inc);
+    _nco_c = 1.0;  /* reset phasor to match rf_set_aero_offset */
+    _nco_s = 0.0;
     double audio_hz = 8000.0 + hz;
     if (g_aero_pmsk) {
         jaero_pmsk_set_manual_tune(g_aero_pmsk, audio_hz);
         jaero_pmsk_set_afc(g_aero_pmsk, 1);
     }
     if (g_aero_demod) {
+        /* setManualTune calls bigchange() — resets coarsefreqestimate and
+         * forces clean re-acquisition at the new audio frequency. This is
+         * exactly what we want on commit (drag end). AFC re-enables after. */
         jaero_oqpsk_cont_set_manual_tune(g_aero_demod, audio_hz);
+        double mc=0, fc=0, fs=0;
+        jaero_oqpsk_cont_get_tune_info(g_aero_demod, &mc, &fc, &fs);
+        LOGI("AERO VFO commit: OQPSK hz=%.0f mixer=%.0f", hz, mc);
     }
-    LOGI("AERO VFO commit: redline=%.0f Hz audio=%.0f Hz", hz, audio_hz);
 }
 
 /* ── WAV file decode (test mode) ─────────────────────────────────────────── */

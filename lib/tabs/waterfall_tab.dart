@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -159,9 +160,9 @@ class WaterfallTab extends StatelessWidget {
     final wfWidget = aero.aeroActive
         ? WaterfallDisplay(
             zoomBandwidthHz: 50000,
-            ncoOffsetHz: aero.symbolRate > 1200 ? aero.ncoOffset : 0,
-            onNcoDrag: aero.symbolRate > 1200 ? (hz) => aero.setNcoOffset(hz) : null,
-            onNcoDragEnd: aero.symbolRate > 1200 ? () => aero.commitNcoOffset() : null,
+            ncoOffsetHz: kDebugMode ? aero.ncoOffset : 0,
+            onNcoDrag: kDebugMode ? (hz) => aero.setNcoOffset(hz) : null,
+            onNcoDragEnd: kDebugMode ? () => aero.commitNcoOffset() : null,
           )
         : const WaterfallDisplay();
 

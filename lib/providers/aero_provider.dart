@@ -83,9 +83,11 @@ class AeroProvider extends ChangeNotifier {
       _aeroService.start();
       SdrFfi.instance.setAeroOffset(_ncoOffset);
       SdrFfi.instance.setAeroSymbolRate(_symbolRate);
+      SdrFfi.instance.setAeroOffsetCommit(_ncoOffset);
       _snack(context, 'AERO decoder started');
     } else {
       _aeroService.stop();
+      _ncoOffset = 0;
       _prevPchanFreq = 0; _prevPchanRate = 0;
       _snack(context, 'AERO decoder stopped');
     }
@@ -96,6 +98,7 @@ class AeroProvider extends ChangeNotifier {
     if (!_aeroActive) return;
     _aeroActive = false;
     _aeroService.stop();
+    _ncoOffset = 0;
     _prevPchanFreq = 0; _prevPchanRate = 0;
     _snack(context, 'AERO decoder stopped');
     notifyListeners();

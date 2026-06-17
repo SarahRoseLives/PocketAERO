@@ -3,13 +3,26 @@ import 'package:provider/provider.dart';
 import '../providers/aero_provider.dart';
 import '../services/aero_service.dart';
 
-class AcarsTab extends StatelessWidget {
+class AcarsTab extends StatefulWidget {
   const AcarsTab({super.key});
+  @override State<AcarsTab> createState() => _AcarsTabState();
+}
+
+class _AcarsTabState extends State<AcarsTab> {
+  final ScrollController _scrollCtrl = ScrollController();
+  int _lastCount = 0;
+
+  @override void dispose() { _scrollCtrl.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     final aero = context.watch<AeroProvider>();
     final acarsMsgs = aero.acarsMessages;
+
+    if (acarsMsgs.length > _lastCount) {
+      _lastCount = acarsMsgs.length;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToTop());
+    }
 
     return Column(children: [
       _buildHeader(context, aero),
@@ -18,12 +31,20 @@ class AcarsTab extends StatelessWidget {
         ? Center(child: Text('No ACARS messages',
             style: const TextStyle(fontSize: 12, color: Colors.white38)))
         : ListView.builder(
+            controller: _scrollCtrl,
             reverse: true,
             itemCount: acarsMsgs.length,
             itemBuilder: (ctx, i) => _buildAcarsCard(ctx, acarsMsgs[i]),
             cacheExtent: 500,
           )),
     ]);
+  }
+
+  void _scrollToTop() {
+    if (_scrollCtrl.hasClients && _scrollCtrl.position.maxScrollExtent > 0) {
+      _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    }
   }
 
   static String _bodyText(AeroMessage msg) {

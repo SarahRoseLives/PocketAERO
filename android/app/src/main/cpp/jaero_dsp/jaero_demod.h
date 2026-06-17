@@ -111,6 +111,7 @@ int    jaero_oqpsk_cont_is_locked(jaero_oqpsk_cont_demod_t *d);
 int    jaero_oqpsk_cont_get_audio(jaero_oqpsk_cont_demod_t *d, double *out, int max_samples);
 void   jaero_oqpsk_cont_get_tune_info(jaero_oqpsk_cont_demod_t *d, double *mixer_center_hz, double *freq_center_hz, double *fs_hz);
 void   jaero_oqpsk_cont_set_manual_tune(jaero_oqpsk_cont_demod_t *d, double audio_hz);
+void   jaero_oqpsk_cont_center_freq_changed(jaero_oqpsk_cont_demod_t *d, double audio_hz);
 void   jaero_oqpsk_cont_set_afc(jaero_oqpsk_cont_demod_t *d, int on);
 int    jaero_oqpsk_cont_is_afc(jaero_oqpsk_cont_demod_t *d);
 double jaero_oqpsk_cont_get_lockingbw(jaero_oqpsk_cont_demod_t *d);

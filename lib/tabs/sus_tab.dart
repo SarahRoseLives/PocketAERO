@@ -3,8 +3,16 @@ import 'package:provider/provider.dart';
 import '../providers/aero_provider.dart';
 import '../services/aero_service.dart';
 
-class SUsTab extends StatelessWidget {
+class SUsTab extends StatefulWidget {
   const SUsTab({super.key});
+  @override State<SUsTab> createState() => _SUsTabState();
+}
+
+class _SUsTabState extends State<SUsTab> {
+  final ScrollController _scrollCtrl = ScrollController();
+  int _lastCount = 0;
+
+  @override void dispose() { _scrollCtrl.dispose(); super.dispose(); }
 
   static const List<String> _pchanTypes = [
     'T_ASSIGN', 'C_ASSIGN_D', 'C_ASSIGN_F', 'C_ASSIGN_S', 'C_ASSIGN_N',
@@ -23,15 +31,28 @@ class SUsTab extends StatelessWidget {
     final msgs = aero.messages.where((m) => _isPchan(m)).toList();
     final cs = Theme.of(context).colorScheme;
 
+    if (msgs.length > _lastCount) {
+      _lastCount = msgs.length;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToTop());
+    }
+
     return Column(children: [
       _buildHeader(context, msgs.length),
       const Divider(height: 1),
       Expanded(child: ListView.builder(
+        controller: _scrollCtrl,
         reverse: true,
         itemCount: msgs.length,
         itemBuilder: (ctx, i) => _buildSuCard(msgs[i], cs),
       )),
     ]);
+  }
+
+  void _scrollToTop() {
+    if (_scrollCtrl.hasClients && _scrollCtrl.position.maxScrollExtent > 0) {
+      _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    }
   }
 
   bool _isPchan(AeroMessage m) {
