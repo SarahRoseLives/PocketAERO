@@ -1,0 +1,10 @@
+*.o
+*.a
+*.so
+*.so.?
+build
+build-*
+test
+compile_commands.json
+.clangd
+.cache
