@@ -58,23 +58,6 @@ class CChannelTab extends StatelessWidget {
         ]),
       ),
 
-      // Symbol rate display
-      Container(
-        margin: const EdgeInsets.symmetric(horizontal: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Row(children: [
-          Text('Symbol Rate:', style: TextStyle(fontSize: 11, color: cs.onSurface.withValues(alpha: 0.6))),
-          const SizedBox(width: 8),
-          Text('${aero.symbolRate.toInt()} baud', style: TextStyle(
-            fontSize: 12, fontWeight: FontWeight.w600, color: cs.onSurface,
-            fontFamily: 'monospace')),
-        ]),
-      ),
-
       const SizedBox(height: 8),
 
       // VASSIGN history

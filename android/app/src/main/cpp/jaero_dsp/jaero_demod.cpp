@@ -98,18 +98,25 @@ struct jaero_oqpsk_demod {
     void *acars_user;
 };
 
-/* internal: forward decoded ACARS data from AeroL to the C callback */
+/* internal: forward decoded ACARS data from AeroL to the C callback.
+ * Pass the full defragmented message text (acarsitem.message), not the
+ * raw ISU userdata block — JAERO passes the assembled message to libacars. */
 static void aerol_acars_adapter(ACARSItem &acarsitem, void *ctx)
 {
     jaero_msk_demod_t *d = (jaero_msk_demod_t *)ctx;
     if (d->acars_cb && acarsitem.valid) {
-        /* pack ISU userdata as the output payload */
-        const uint8_t *data = acarsitem.isuitem.userdata.data();
-        int len = (int)acarsitem.isuitem.userdata.size();
+        const uint8_t *data = acarsitem.message.data();
+        int len = (int)acarsitem.message.size();
+        char label[3] = {0};
+        if (acarsitem.LABEL.size() >= 2) {
+            label[0] = (char)acarsitem.LABEL[0];
+            label[1] = (char)acarsitem.LABEL[1];
+        }
         d->acars_cb(data, len, d->channel_id,
                     acarsitem.isuitem.AESID, acarsitem.isuitem.GESID,
                     acarsitem.isuitem.QNO, acarsitem.isuitem.REFNO,
                     acarsitem.downlink ? 1 : 0,
+                    label,
                     d->acars_user);
     }
 }
@@ -139,12 +146,18 @@ static void oqpsk_aerol_acars_adapter(ACARSItem &acarsitem, void *ctx)
 {
     jaero_oqpsk_demod_t *d = (jaero_oqpsk_demod_t *)ctx;
     if (d->acars_cb && acarsitem.valid) {
-        const uint8_t *data = acarsitem.isuitem.userdata.data();
-        int len = (int)acarsitem.isuitem.userdata.size();
+        const uint8_t *data = acarsitem.message.data();
+        int len = (int)acarsitem.message.size();
+        char label[3] = {0};
+        if (acarsitem.LABEL.size() >= 2) {
+            label[0] = (char)acarsitem.LABEL[0];
+            label[1] = (char)acarsitem.LABEL[1];
+        }
         d->acars_cb(data, len, d->channel_id,
                     acarsitem.isuitem.AESID, acarsitem.isuitem.GESID,
                     acarsitem.isuitem.QNO, acarsitem.isuitem.REFNO,
                     acarsitem.downlink ? 1 : 0,
+                    label,
                     d->acars_user);
     }
 }
@@ -366,12 +379,18 @@ static void pmsk_acars_adapter(ACARSItem &acarsitem, void *ctx)
 {
     jaero_pmsk_demod_t *d = (jaero_pmsk_demod_t *)ctx;
     if (d->acars_cb && acarsitem.valid) {
-        const uint8_t *data = acarsitem.isuitem.userdata.data();
-        int len = (int)acarsitem.isuitem.userdata.size();
+        const uint8_t *data = acarsitem.message.data();
+        int len = (int)acarsitem.message.size();
+        char label[3] = {0};
+        if (acarsitem.LABEL.size() >= 2) {
+            label[0] = (char)acarsitem.LABEL[0];
+            label[1] = (char)acarsitem.LABEL[1];
+        }
         d->acars_cb(data, len, d->channel_id,
                     acarsitem.isuitem.AESID, acarsitem.isuitem.GESID,
                     acarsitem.isuitem.QNO, acarsitem.isuitem.REFNO,
                     acarsitem.downlink ? 1 : 0,
+                    label,
                     d->acars_user);
     }
 }
@@ -587,12 +606,18 @@ static void oqpsk_cont_aerol_acars_adapter(ACARSItem &acarsitem, void *ctx)
 {
     jaero_oqpsk_cont_demod_t *d = (jaero_oqpsk_cont_demod_t *)ctx;
     if (d->acars_cb && acarsitem.valid) {
-        const uint8_t *data = acarsitem.isuitem.userdata.data();
-        int len = (int)acarsitem.isuitem.userdata.size();
+        const uint8_t *data = acarsitem.message.data();
+        int len = (int)acarsitem.message.size();
+        char label[3] = {0};
+        if (acarsitem.LABEL.size() >= 2) {
+            label[0] = (char)acarsitem.LABEL[0];
+            label[1] = (char)acarsitem.LABEL[1];
+        }
         d->acars_cb(data, len, d->channel_id,
                     acarsitem.isuitem.AESID, acarsitem.isuitem.GESID,
                     acarsitem.isuitem.QNO, acarsitem.isuitem.REFNO,
                     acarsitem.downlink ? 1 : 0,
+                    label,
                     d->acars_user);
     }
 }
@@ -667,7 +692,7 @@ jaero_oqpsk_cont_demod_t *jaero_oqpsk_cont_create(double sample_rate, double sym
     double default_bw = (symbol_rate <= 8400) ? 5000.0 : 10500.0;
     s.lockingbw                = (oqpsk_lockingbw > 0) ? oqpsk_lockingbw : default_bw;
     s.coarsefreqest_fft_power  = 14;
-    s.signalthreshold          = 0.95; /* lowered to accept noisier constellations */
+    s.signalthreshold          = 0.65; /* match JAERO default */
 
     d->demod->setSettings(s);
     d->demod->setSoftBitsCallback(oqpsk_cont_bits_adapter, d);

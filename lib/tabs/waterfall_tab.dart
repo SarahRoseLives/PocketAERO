@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -77,21 +76,21 @@ class WaterfallTab extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final isTablet = Breakpoints.isTablet(context);
 
-    final freqSize   = rs.fontSize(18);
+    final freqSize   = rs.fontSize(isTablet ? 18 : 14);
     final labelSize  = rs.fontSize(11);
 
     Widget pad4 = SizedBox(height: rs.spacing(4));
-    Widget pad8 = SizedBox(height: rs.spacing(8));
+    Widget pad6 = SizedBox(height: rs.spacing(6));
 
     Widget controlPanel = SingleChildScrollView(
-      padding: EdgeInsets.only(right: rs.spacing(8)),
+      padding: EdgeInsets.only(right: rs.spacing(isTablet ? 8 : 4)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('${(radio.frequencyHz / 1e6).toStringAsFixed(6)} MHz',
             style: TextStyle(fontFamily: 'monospace', fontSize: freqSize,
               fontWeight: FontWeight.w700, color: cs.onSurface, letterSpacing: 1.5)),
-          pad8,
+          pad6,
 
           SizedBox(
             width: double.infinity,
@@ -102,11 +101,14 @@ class WaterfallTab extends StatelessWidget {
                     aero.stopAero(context);
                   }
                 : () => _connect(context),
-              style: ElevatedButton.styleFrom(backgroundColor: running ? Colors.red : Colors.green),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: running ? Colors.red : Colors.green,
+                padding: EdgeInsets.symmetric(vertical: isTablet ? 12 : 6),
+              ),
               child: Text(running ? 'STOP' : 'CONNECT',
-                style: TextStyle(fontSize: rs.fontSize(13)))),
+                style: TextStyle(fontSize: rs.fontSize(isTablet ? 13 : 11)))),
           ),
-          pad8,
+          pad6,
 
           _toggleChip(context,
             icon: aero.aeroActive ? Icons.flight : Icons.flight_takeoff,
@@ -121,21 +123,24 @@ class WaterfallTab extends StatelessWidget {
             active: aero.biasTeeOn,
             activeColor: Colors.redAccent, activeBg: Colors.red.shade800,
             rs: rs, onPressed: running ? () => aero.toggleBiasTee(context) : null),
-          pad4,
-          Builder(builder: (ctx) {
-            final isDark = ctx.watch<ThemeProvider>().isDark;
-            final cs2 = Theme.of(ctx).colorScheme;
-            return ActionChip(
-              avatar: Icon(isDark ? Icons.dark_mode : Icons.light_mode,
-                size: rs.iconSize(16), color: isDark ? Colors.amberAccent : Colors.orangeAccent),
-              label: Text(isDark ? 'DARK' : 'LIGHT',
-                style: TextStyle(fontSize: rs.fontSize(11), color: cs2.onSurface)),
-              onPressed: () => ctx.read<ThemeProvider>().toggle(),
-              backgroundColor: cs2.surfaceContainerHighest,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact);
-          }),
-          pad8,
+          pad6,
+
+          if (isTablet) ...[
+            Builder(builder: (ctx) {
+              final isDark = ctx.watch<ThemeProvider>().isDark;
+              final cs2 = Theme.of(ctx).colorScheme;
+              return ActionChip(
+                avatar: Icon(isDark ? Icons.dark_mode : Icons.light_mode,
+                  size: rs.iconSize(16), color: isDark ? Colors.amberAccent : Colors.orangeAccent),
+                label: Text(isDark ? 'DARK' : 'LIGHT',
+                  style: TextStyle(fontSize: rs.fontSize(11), color: cs2.onSurface)),
+                onPressed: () => ctx.read<ThemeProvider>().toggle(),
+                backgroundColor: cs2.surfaceContainerHighest,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact);
+            }),
+            pad6,
+          ],
 
           Text('BAUD', style: TextStyle(fontSize: labelSize,
             color: Colors.grey[600], fontWeight: FontWeight.w600, letterSpacing: 1.2)),
@@ -144,30 +149,7 @@ class WaterfallTab extends StatelessWidget {
             for (final b in [600.0, 1200.0, 8400.0, 10500.0])
               _baudChip(context, b, aero, rs),
           ]),
-          pad8,
-
-          if (kDebugMode) ...[
-            Text('RECORD', style: TextStyle(fontSize: labelSize,
-              color: Colors.grey[600], fontWeight: FontWeight.w600, letterSpacing: 1.2)),
-            pad4,
-            Row(children: [
-              ActionChip(
-                avatar: Icon(Icons.folder_open, size: rs.iconSize(16), color: Colors.black54),
-                label: Text('WAV', style: TextStyle(fontSize: rs.fontSize(12), color: Colors.black87)),
-                onPressed: () => aero.loadWavFile(context),
-                backgroundColor: Colors.grey.shade200),
-              _recChip(context,
-                icon: Icons.fiber_manual_record, label: 'REC',
-                recording: aero.recording, rs: rs,
-                onPressed: running && aero.aeroActive ? () => aero.toggleRecording(context) : null),
-              _recChip(context,
-                icon: Icons.raw_on, label: 'RAW',
-                recording: aero.recordingRaw, rs: rs,
-                activeColor: Colors.purpleAccent,
-                onPressed: running ? () => aero.toggleRecordingRaw(context, radio) : null),
-            ]),
-            pad8,
-          ],
+          pad6,
 
           const SpectrumControls(),
         ],
@@ -258,25 +240,6 @@ class WaterfallTab extends StatelessWidget {
         materialTapTargetSize: stretch ? MaterialTapTargetSize.padded : MaterialTapTargetSize.shrinkWrap,
         visualDensity: stretch ? VisualDensity.standard : VisualDensity.compact,
       ),
-    );
-  }
-
-  Widget _recChip(BuildContext context, {
-    required IconData icon, required String label, required bool recording,
-    Color activeColor = Colors.redAccent,
-    required ResponsiveScale rs, required VoidCallback? onPressed,
-  }) {
-    final stretch = rs.stretchTapTarget;
-    final cs = Theme.of(context).colorScheme;
-    return ActionChip(
-      avatar: Icon(recording ? Icons.stop : icon,
-        size: rs.iconSize(16), color: recording ? cs.onSurface.withValues(alpha: 0.5) : activeColor),
-      label: Text(recording ? 'STOP' : label, style: TextStyle(
-        fontSize: rs.fontSize(11), color: recording ? cs.onSurface : activeColor)),
-      onPressed: onPressed,
-      backgroundColor: cs.surfaceContainerHighest,
-      materialTapTargetSize: stretch ? MaterialTapTargetSize.padded : MaterialTapTargetSize.shrinkWrap,
-      visualDensity: stretch ? VisualDensity.standard : VisualDensity.compact,
     );
   }
 }

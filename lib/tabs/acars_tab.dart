@@ -18,6 +18,7 @@ class AcarsTab extends StatelessWidget {
         ? Center(child: Text('No ACARS messages',
             style: const TextStyle(fontSize: 12, color: Colors.white38)))
         : ListView.builder(
+            reverse: true,
             itemCount: acarsMsgs.length,
             itemBuilder: (ctx, i) => _buildAcarsCard(ctx, acarsMsgs[i]),
             cacheExtent: 500,

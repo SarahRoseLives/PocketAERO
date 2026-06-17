@@ -27,6 +27,7 @@ class SUsTab extends StatelessWidget {
       _buildHeader(context, msgs.length),
       const Divider(height: 1),
       Expanded(child: ListView.builder(
+        reverse: true,
         itemCount: msgs.length,
         itemBuilder: (ctx, i) => _buildSuCard(msgs[i], cs),
       )),

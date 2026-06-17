@@ -20,6 +20,7 @@ class AeroProvider extends ChangeNotifier {
   double _symbolRate = 10500;
   bool _voiceFollow = false;
   double _prevPchanFreq = 0;
+  double _prevPchanRate = 0;
 
   final List<AeroMessage> _messages = [];
   final List<AeroMessage> _acarsMessages = [];
@@ -85,7 +86,7 @@ class AeroProvider extends ChangeNotifier {
       _snack(context, 'AERO decoder started');
     } else {
       _aeroService.stop();
-      _prevPchanFreq = 0;
+      _prevPchanFreq = 0; _prevPchanRate = 0;
       _snack(context, 'AERO decoder stopped');
     }
     notifyListeners();
@@ -95,7 +96,7 @@ class AeroProvider extends ChangeNotifier {
     if (!_aeroActive) return;
     _aeroActive = false;
     _aeroService.stop();
-    _prevPchanFreq = 0;
+    _prevPchanFreq = 0; _prevPchanRate = 0;
     _snack(context, 'AERO decoder stopped');
     notifyListeners();
   }
@@ -151,7 +152,8 @@ class AeroProvider extends ChangeNotifier {
   void handleVoiceAssign(AeroMessage msg, RadioProvider radio) {
     if (!_voiceFollow || msg.callType != 'C_ASSIGN') return;
     _prevPchanFreq = radio.frequencyHz;
-    _aeroService.onVoiceAssign(msg, radio.frequencyHz.round(), 1200.0);
+    _prevPchanRate = _symbolRate;
+    _aeroService.onVoiceAssign(msg, radio.frequencyHz.round(), _symbolRate);
     _symbolRate = 8400.0;
     SdrFfi.instance.setAeroSymbolRate(8400.0);
     radio.setFrequency(msg.callRxFreq.toDouble());
@@ -163,9 +165,12 @@ class AeroProvider extends ChangeNotifier {
       radio.setFrequency(_prevPchanFreq);
       _prevPchanFreq = 0;
     }
+    if (_prevPchanRate > 0) {
+      _symbolRate = _prevPchanRate;
+      SdrFfi.instance.setAeroSymbolRate(_prevPchanRate);
+      _prevPchanRate = 0;
+    }
     _aeroService.revertVoiceFollow();
-    _symbolRate = 1200.0;
-    SdrFfi.instance.setAeroSymbolRate(1200.0);
     notifyListeners();
   }
 

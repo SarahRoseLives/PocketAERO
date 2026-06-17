@@ -283,9 +283,9 @@ class SpectrumControls extends StatelessWidget {
             // ── Color Scheme ─────────────────────────────────────────────────
             _SLabel('Color'),
             const SizedBox(height: 6),
-            Row(children: [
+            Wrap(spacing: 4, runSpacing: 4, children: [
               for (final cs in WaterfallColorScheme.values)
-                Padding(padding: const EdgeInsets.only(right: 4), child: ActionChip(
+                ActionChip(
                   avatar: _colorSwatch(cs, 12),
                   label: Text(cs.name[0].toUpperCase() + cs.name.substring(1),
                     style: TextStyle(fontSize: 11, color: s.colorScheme == cs ? Colors.white : null)),
@@ -293,9 +293,9 @@ class SpectrumControls extends StatelessWidget {
                   backgroundColor: s.colorScheme == cs
                     ? Theme.of(context).colorScheme.primary
                     : Theme.of(context).colorScheme.surfaceContainerHighest,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                )),
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
             ]),
             const SizedBox(height: 10),
 

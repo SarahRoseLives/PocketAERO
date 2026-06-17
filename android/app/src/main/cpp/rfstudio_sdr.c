@@ -51,6 +51,8 @@
 #include "librtlsdr/include/rtl-sdr-android.h"
 #include "multimon-ng/multimon.h"
 #include "jaero_demod.h"
+#include <libacars/libacars.h>
+#include <libacars/acars.h>
 
 /* ── mbelib AMBE vocoder (for AERO C-channel voice) ── */
 #include "mbelib.h"
@@ -274,32 +276,96 @@ static void _aero_init_hb(void)
 static void _aero_acars_cb(const uint8_t *data, int len, int channel_id,
                             uint32_t aes_id, uint8_t ges_id,
                             uint8_t qno, uint8_t refno, int downlink,
+                            const char *label,
                             void *user)
 {
-    (void)user; (void)channel_id; (void)aes_id; (void)ges_id;
-    (void)qno; (void)refno; (void)downlink;
+    (void)user; (void)channel_id; (void)qno; (void)refno;
+
+    /* Build display body (printable chars only, CR→LF) and raw body for libacars.
+     * JAERO passes the raw body to libacars — non-printable chars may be
+     * part of binary-encoded ACARS fields. Clean body is for display only. */
+    char raw_body[4096];
+    char display_body[4096];
+    int raw_len = 0, display_len = 0;
+    for (int i = 0; i < len && raw_len < (int)sizeof(raw_body) - 1; i++) {
+        char c = (char)(data[i] & 0x7F);
+        raw_body[raw_len++] = c;
+        if (c == '\r') c = '\n';
+        if ((c >= 0x20 && c < 0x7F) || c == '\n')
+            display_body[display_len++] = c;
+    }
+    raw_body[raw_len] = '\0';
+    display_body[display_len] = '\0';
+
+    if (raw_len == 0) return;
+
+    /* For downlink, JAERO skips first 10 raw chars (4-digit msg# + 6-char
+     * flight ID) before passing to libacars. Do the skip on the raw body. */
+    char *decode_body = raw_body;
+    int decode_len = raw_len;
+    if (downlink && raw_len > 10) {
+        decode_body = raw_body + 10;
+        decode_len = raw_len - 10;
+    }
+
     pthread_mutex_lock(&g_aero_msg_mtx);
     int room = (int)sizeof(g_aero_msg_buf) - g_aero_msg_len - 1;
     if (room < 4) { pthread_mutex_unlock(&g_aero_msg_mtx); return; }
 
-    /* Format: "AES=XXXXXX GES=XX LEN=XXX\ntext\ntext...\n\n" */
+    /* Run libacars decode on raw body (JAERO passes unmodified bytes).
+     * Pass label even if empty — libacars handles malformed labels. */
+    char libacars_out[2048];
+    libacars_out[0] = '\0';
+    const char *lbl = (label && label[0]) ? label : "  ";
+    {
+        la_msg_dir dir = downlink ? LA_MSG_DIR_AIR2GND : LA_MSG_DIR_GND2AIR;
+        la_proto_node *node = la_acars_decode_apps(lbl, decode_body, dir);
+        if (node) {
+            la_vstring *vstr = la_proto_tree_format_text(NULL, node);
+            if (vstr && vstr->str) {
+                int vl = (int)strlen(vstr->str);
+                if (vl < (int)sizeof(libacars_out) - 1) {
+                    memcpy(libacars_out, vstr->str, vl);
+                    libacars_out[vl] = '\0';
+                }
+                la_vstring_destroy(vstr, true);
+            }
+            la_proto_tree_destroy(node);
+        }
+    }
+
+    /* Format: "AES=XXXXXX GES=XX LEN=XXX LAB=XX\ntext\nlibacars...\n\n" */
     {
         int hdr = snprintf(g_aero_msg_buf + g_aero_msg_len, (size_t)room,
-                           "AES=%06X GES=%u LEN=%d\n", aes_id, ges_id, len);
+                           "AES=%06X GES=%u LEN=%d LAB=%c%c\n",
+                           aes_id, ges_id, len,
+                           (label && label[0]) ? label[0] : ' ',
+                           (label && label[1]) ? label[1] : ' ');
         if (hdr > 0 && hdr < room) { g_aero_msg_len += hdr; room -= hdr; }
     }
 
-    for (int i = 0; i < len && room >= 2; i++) {
-        char c = (char)(data[i] & 0x7F);
-        if (c == '\r') c = '\n';  /* normalize line endings */
-        if ((c >= 0x20 && c < 0x7F) || c == '\n') {
-            g_aero_msg_buf[g_aero_msg_len++] = c;
-            room--;
+    // Append display body (printable chars only)
+    for (int i = 0; i < display_len && room >= 2; i++) {
+        g_aero_msg_buf[g_aero_msg_len++] = display_body[i];
+        room--;
+    }
+    if (room >= 2) { g_aero_msg_buf[g_aero_msg_len++] = '\n'; room--; }
+
+    // Append libacars decoded output
+    if (libacars_out[0] && room > 2) {
+        size_t lo_len = strlen(libacars_out);
+        if (lo_len + 2 < (size_t)room) {
+            memcpy(g_aero_msg_buf + g_aero_msg_len, libacars_out, lo_len);
+            g_aero_msg_len += (int)lo_len;
         }
     }
-    g_aero_msg_buf[g_aero_msg_len++] = '\n';  /* end of SU */
+
     g_aero_msg_buf[g_aero_msg_len++] = '\n';  /* blank line between SUs */
-    LOGI("ACARS: AES=%06X GES=%u len=%d buf_used=%d", aes_id, ges_id, len, g_aero_msg_len);
+    LOGI("ACARS: AES=%06X GES=%u len=%d label=%c%c buf_used=%d",
+         aes_id, ges_id, len,
+         (label && label[0]) ? label[0] : '?',
+         (label && label[1]) ? label[1] : '?',
+         g_aero_msg_len);
     pthread_mutex_unlock(&g_aero_msg_mtx);
 }
 
@@ -353,6 +419,19 @@ static void _aero_decoded_cb(const uint8_t *data, int len, void *user)
     if (len >= 12 && (len % 12) == 0) {
         int unit_size = 12;
         for (int i = 0; i + unit_size <= len; i += unit_size) {
+            /* Validate CRC16-GENIBUS over bytes 0..9, CRC at bytes 10,11 MSB */
+            uint16_t crc = 0xFFFF;
+            for (int b = 0; b < 10; b++) {
+                uint8_t mb = data[i + b];
+                for (int k = 0; k < 8; k++) {
+                    int bit = mb & 1; mb >>= 1;
+                    int cb = crc & 1; crc >>= 1;
+                    if (cb ^ bit) crc ^= 0x8408;
+                }
+            }
+            crc = ~crc;
+            uint16_t crc_rec = ((uint16_t)data[i+11] << 8) | (uint16_t)data[i+10];
+            if (crc != crc_rec) continue;
             uint8_t msg = data[i];
             if (msg == 0x01) continue; /* Fill-in SU */
             uint32_t aes = ((uint32_t)data[i+1] << 16) | ((uint32_t)data[i+2] << 8) | (uint32_t)data[i+3];
@@ -1788,6 +1867,10 @@ int32_t rf_is_wfm_running(void)
 /* ── AERO ACARS decoder public API ────────────────────────────────────────── */
 int32_t rf_start_aero(void) {
     if (g_aero_running) return -1;
+
+    /* One-time libacars init */
+    static int libacars_inited = 0;
+    if (!libacars_inited) { la_config_init(); libacars_inited = 1; }
 
     /* Allocate ring buffer once (shared between AERO modes) */
     if (!g_aero_rb) {

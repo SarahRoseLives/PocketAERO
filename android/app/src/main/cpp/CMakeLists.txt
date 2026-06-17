@@ -57,6 +57,20 @@ set(MULTIMON_SRC
 # ── librf_studio_sdr (shared — loaded by Dart FFI) ───────────────────────────
 set(JAERO_DSP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/jaero_dsp")
 
+# ── libacars (static, ACARS message decoding) ───────────────────────────────
+set(LIBACARS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libacars/libacars")
+file(GLOB LIBACARS_SRC
+    ${LIBACARS_DIR}/*.c
+    ${LIBACARS_DIR}/asn1/*.c)
+add_library(libacars_static STATIC ${LIBACARS_SRC})
+target_include_directories(libacars_static PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/libacars)
+target_include_directories(libacars_static PRIVATE ${LIBACARS_DIR})
+target_compile_options(libacars_static PRIVATE -Wall -O2 -Wno-unused-parameter)
+find_library(ZLIB_LIB z)
+if(ZLIB_LIB)
+    target_link_libraries(libacars_static ${ZLIB_LIB})
+endif()
+
 # ── mbelib AMBE vocoder (static, compiled into rf_studio_sdr) ─────────────────
 set(MBELIB_DIR "/home/rose/Compiled/AndAERO/libaeroambe/mbelib-master")
 set(MBELIB_SRC
@@ -108,7 +122,8 @@ target_include_directories(rf_studio_sdr PRIVATE
     ${MULTIMON_ROOT}
     ${JAERO_DSP_DIR}
     ${LIBCORRECT_DIR}/include
-    ${MBELIB_DIR})
+    ${MBELIB_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/libacars)
 target_compile_options(rf_studio_sdr PRIVATE
     -Wall -O2 -ffast-math -fpermissive
     -DMAX_VERBOSE_LEVEL=0
@@ -116,7 +131,7 @@ target_compile_options(rf_studio_sdr PRIVATE
     -DNO_X11
     -DNO_SDL3
     -DDUMMY_AUDIO)
-target_link_libraries(rf_studio_sdr rtlsdr_static usb_android ${LOG_LIB} m aaudio)
+target_link_libraries(rf_studio_sdr rtlsdr_static usb_android ${LOG_LIB} m aaudio libacars_static ${ZLIB_LIB})
 
 # ── librtl433_ffi (shared — loaded by Dart FFI for 433 MHz decoding) ─────────
 set(RTL433_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/rtl_433")
