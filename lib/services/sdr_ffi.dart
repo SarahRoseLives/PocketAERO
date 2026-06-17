@@ -188,6 +188,7 @@ class SdrFfi {
   late final _rfAeroConst = _lib.lookupFunction<_RfAeroConstN, _RfAeroConstD>('rf_get_aero_constellation');
   late final _rfLoadWav   = _lib.lookupFunction<_RfLoadWavN,   _RfLoadWavD>  ('rf_load_wav_aero');
   late final _rfSetAeroOffset = _lib.lookupFunction<_RfSetAeroOffsetN, _RfSetAeroOffsetD>('rf_set_aero_offset');
+  late final _rfSetAeroCommit = _lib.lookupFunction<_RfSetAeroOffsetN, _RfSetAeroOffsetD>('rf_set_aero_offset_commit');
   late final _rfSetAeroBoxcar = _lib.lookupFunction<_RfSetAeroBoxcarN, _RfSetAeroBoxcarD>('rf_set_aero_boxcar_mode');
   late final _rfSetAeroSymRate = _lib.lookupFunction<_RfSetAeroSymRateN, _RfSetAeroSymRateD>('rf_set_aero_symbol_rate');
   late final _rfSetAeroFeedMode = _lib.lookupFunction<_RfSetAeroFeedModeN, _RfSetAeroFeedModeD>('rf_set_aero_feed_mode');
@@ -318,6 +319,7 @@ class SdrFfi {
   int loadWavAero(Pointer<Utf8> path) => _rfLoadWav(path);
   void setAeroFeedIqMode(bool on) => _rfSetAeroFeedMode(on ? 1 : 0);
   void setAeroOffset(double hz) => _rfSetAeroOffset(hz);
+  void setAeroOffsetCommit(double hz) => _rfSetAeroCommit(hz);
   void setAeroBoxcarMode(bool on) => _rfSetAeroBoxcar(on ? 1 : 0);
   void setAeroSymbolRate(double rate) => _rfSetAeroSymRate(rate);
   int startAeroRecording(Pointer<Utf8> path) => _rfStartAeroRec(path);

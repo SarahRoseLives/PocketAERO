@@ -118,18 +118,30 @@ static inline float _hann(int i, int n)
 }
 
 /* Accumulate linear power spectrum (magnitude², DC-centred, normalised) into
-   power_acc.  Call with a pre-zeroed buffer; call FFT_AVG_N times then convert. */
+   power_acc.  Call with a pre-zeroed buffer; call FFT_AVG_N times then convert.
+   Uses a slow IIR DC estimate (~80 Hz cutoff at 1 Msps) to track the hardware
+   DC offset without touching signal energy above ~100 Hz.  This only affects
+   the FFT display path; the decoder uses a separate data path. */
 static void _accumulate_power(const uint8_t *iq, int n,
                                float *re_buf, float *im_buf,
                                float *power_acc)
 {
+    static float i_dc = 127.5f, q_dc = 127.5f;
     const float scale = 1.0f / 127.5f;
     const float norm  = 2.0f / (float)n;
+    const float alpha = 0.0005f; /* IIR lowpass: fc ≈ alpha * fs / (2π) ≈ 82 Hz */
 
     for (int i = 0; i < n; i++) {
+        float si = (float)iq[2 * i];
+        float sq = (float)iq[2 * i + 1];
+
+        /* Slowly track the hardware DC offset, ignore signal energy */
+        i_dc += alpha * (si - i_dc);
+        q_dc += alpha * (sq - q_dc);
+
         float w   = _hann(i, n);
-        re_buf[i] = ((float)iq[2 * i]     - 127.5f) * scale * w;
-        im_buf[i] = ((float)iq[2 * i + 1] - 127.5f) * scale * w;
+        re_buf[i] = (si - i_dc) * scale * w;
+        im_buf[i] = (sq - q_dc) * scale * w;
     }
 
     _fft(re_buf, im_buf, n);
@@ -287,7 +299,7 @@ static void _aero_acars_cb(const uint8_t *data, int len, int channel_id,
     }
     g_aero_msg_buf[g_aero_msg_len++] = '\n';  /* end of SU */
     g_aero_msg_buf[g_aero_msg_len++] = '\n';  /* blank line between SUs */
-    LOGI("ACARS: AES=%06X GES=%u len=%d", aes_id, ges_id, len);
+    LOGI("ACARS: AES=%06X GES=%u len=%d buf_used=%d", aes_id, ges_id, len, g_aero_msg_len);
     pthread_mutex_unlock(&g_aero_msg_mtx);
 }
 
@@ -335,7 +347,9 @@ static void _aero_decoded_cb(const uint8_t *data, int len, void *user)
         LOGI("DECODE_CB: call=%d len=%d", call_count, len);
     if (!data || len < 10) return;
 
-    /* Detect P-channel: 12-byte SUs (with CRC appended) */
+    /* Detect P-channel: 12-byte SUs (with CRC appended).
+     * C-channel (10500/8400 bps) can also carry P-channel style signaling
+     * alongside ACARS data — do not guard on demod type. */
     if (len >= 12 && (len % 12) == 0) {
         int unit_size = 12;
         for (int i = 0; i + unit_size <= len; i += unit_size) {
@@ -720,6 +734,9 @@ static void _aero_feed_iq(const uint8_t *iq, int n_iq_pairs)
                 double tc = _nco_c * _nco_ci - _nco_s * _nco_si;
                 double ts = _nco_c * _nco_si + _nco_s * _nco_ci;
                 _nco_c = tc; _nco_s = ts;
+                static int nco_log_count = 0;
+                if (++nco_log_count % 50000 == 1)
+                    LOGI("NCO: active si=%.6f ci=%.6f rate=%d", _nco_si, _nco_ci, g_aero_rate);
             }
 
             /* Boxcar averaging decimation: accumulate 16 samples, output 1.
@@ -1040,10 +1057,6 @@ static void _aero_async_cb(unsigned char *buf, uint32_t len_bytes, void *ctx)
             float p  = c->acc[i] * inv;
             c->tmp[i] = (p > 1e-30f) ? 10.0f * log10f(p) : MIN_DB;
         }
-
-        /* Supress DC spike */
-        int dc = fft_n / 2;
-        c->tmp[dc] = (c->tmp[dc - 2] + c->tmp[dc - 1] + c->tmp[dc + 1] + c->tmp[dc + 2]) * 0.25f;
 
         /* Signal level: peak over centre 25% */
         float peak = MIN_DB;
@@ -1688,13 +1701,6 @@ static void *_wfm_thread_fn(void *arg)
                     float p = acc_buf[i] * inv;
                     tmp_buf[i] = (p > 1e-30f) ? 10.0f * log10f(p) : MIN_DB;
                 }
-                int dc = g_fft_size / 2;
-                if (dc > 1 && dc < g_fft_size - 2) {
-                    float avg = (tmp_buf[dc-2] + tmp_buf[dc+2]) * 0.5f;
-                    tmp_buf[dc-1] = avg;
-                    tmp_buf[dc]   = avg;
-                    tmp_buf[dc+1] = avg;
-                }
                 pthread_mutex_lock(&g_fft_mtx);
                 memcpy(g_fft_out, tmp_buf, (size_t)g_fft_size * sizeof(float));
                 g_fft_cnt++;
@@ -1893,6 +1899,11 @@ int32_t rf_poll_aero(char *out, int32_t maxlen) {
         g_aero_msg_len -= len;
     }
     pthread_mutex_unlock(&g_aero_msg_mtx);
+    /* Debug: log buffer status every 20th poll (~4s) */
+    static int poll_count = 0;
+    if (++poll_count % 20 == 0) {
+        LOGI("POLL: len=%d remaining=%d", len, g_aero_msg_len);
+    }
     return (int32_t)len;
 }
 
@@ -2091,7 +2102,21 @@ void rf_set_aero_offset(double hz) {
     double inc = 2.0 * 3.14159265358979 * hz / (double)g_aero_rate;
     _nco_ci = cos(inc);
     _nco_si = sin(inc);
-    LOGI("AERO NCO offset: %.1f Hz", hz);
+}
+
+void rf_set_aero_offset_commit(double hz) {
+    double inc = 2.0 * 3.14159265358979 * hz / (double)g_aero_rate;
+    _nco_ci = cos(inc);
+    _nco_si = sin(inc);
+    double audio_hz = 8000.0 + hz;
+    if (g_aero_pmsk) {
+        jaero_pmsk_set_manual_tune(g_aero_pmsk, audio_hz);
+        jaero_pmsk_set_afc(g_aero_pmsk, 1);
+    }
+    if (g_aero_demod) {
+        jaero_oqpsk_cont_set_manual_tune(g_aero_demod, audio_hz);
+    }
+    LOGI("AERO VFO commit: redline=%.0f Hz audio=%.0f Hz", hz, audio_hz);
 }
 
 /* ── WAV file decode (test mode) ─────────────────────────────────────────── */
@@ -2133,13 +2158,17 @@ int32_t rf_load_wav_aero(const char *path) {
     long nsamples = data_sz / (nc * (bps / 8));
     LOGI("WAV: %dHz %dch %dbps %ld samples", sr, nc, bps, nsamples);
 
+    /* Apply same boxcar decimation as live path so demod gets expected rate */
+    int boxcar_n = (sr >= 2000000) ? 50 : 16;
+    double audio_rate = (double)sr / (double)boxcar_n;
+
     /* Create fresh demodulator (destroy old one for clean state) */
     if (g_aero_demod) {
         jaero_oqpsk_cont_destroy(g_aero_demod);
         g_aero_demod = NULL;
     }
     oqpsk_lockingbw = 0;  /* default 10500 for WAV path */
-    g_aero_demod = jaero_oqpsk_cont_create((double)sr, 10500.0, 0, _aero_soft_bits_cb, NULL);
+    g_aero_demod = jaero_oqpsk_cont_create(audio_rate, 10500.0, 0, _aero_soft_bits_cb, NULL);
     if (g_aero_demod) {
         jaero_oqpsk_cont_set_acars_callback(g_aero_demod, _aero_acars_cb, NULL);
         jaero_oqpsk_cont_set_cassign_callback(g_aero_demod, _aero_cassign_cb, NULL);
@@ -2153,19 +2182,38 @@ int32_t rf_load_wav_aero(const char *path) {
     fread(buf, 1, data_sz, f);
     fclose(f);
 
-    double *iq = (double*)malloc(nsamples * 2 * sizeof(double));
+    /* Boxcar decimate the WAV IQ before feeding to demod */
+    long nout_samples = nsamples / boxcar_n;
+    double *iq = (double*)malloc(nout_samples * 2 * sizeof(double));
     if (nc >= 2) {
-        for (long i = 0; i < nsamples; i++) {
-            iq[i*2]   = buf[i*2]   / 32768.0;
-            iq[i*2+1] = buf[i*2+1] / 32768.0;
+        double acc_i = 0.0, acc_q = 0.0;
+        long out_idx = 0;
+        for (long i = 0; i < nsamples && out_idx < nout_samples; i++) {
+            acc_i += (double)buf[i*2]   / 32768.0;
+            acc_q += (double)buf[i*2+1] / 32768.0;
+            if ((i + 1) % boxcar_n == 0) {
+                iq[out_idx*2]   = acc_i / (double)boxcar_n;
+                iq[out_idx*2+1] = acc_q / (double)boxcar_n;
+                acc_i = 0.0; acc_q = 0.0;
+                out_idx++;
+            }
         }
     } else {
-        for (long i = 0; i < nsamples; i++)
-            iq[i] = buf[i] / 32768.0;
+        double acc = 0.0;
+        long out_idx = 0;
+        for (long i = 0; i < nsamples && out_idx < nout_samples; i++) {
+            acc += (double)buf[i] / 32768.0;
+            if ((i + 1) % boxcar_n == 0) {
+                iq[out_idx] = acc / (double)boxcar_n;
+                acc = 0.0;
+                out_idx++;
+            }
+        }
     }
 
-    LOGI("Feeding %ld IQ pairs to AERO decoder...", nsamples);
-    jaero_oqpsk_cont_feed_iq(g_aero_demod, iq, nsamples);
+    LOGI("Feeding %ld IQ pairs to AERO decoder (boxcar %d:1, %.0f Hz audio)...",
+         nout_samples, boxcar_n, audio_rate);
+    jaero_oqpsk_cont_feed_iq(g_aero_demod, iq, nout_samples);
     LOGI("WAV decode complete. Messages: %d  MSE=%.3f Eb/No=%.1f",
          g_aero_msg_len,
          g_aero_demod ? jaero_oqpsk_cont_get_mse(g_aero_demod) : 0.0,

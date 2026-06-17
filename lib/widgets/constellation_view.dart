@@ -80,8 +80,8 @@ class _ConstellationPainter extends CustomPainter {
   _ConstellationPainter(this.iq, this.nPoints);
 
   @override void paint(Canvas canvas, ui.Size size) {
-    // Dark background
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF0A0E1A));
+    // Semi-transparent dark background
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xBB0A0E1A));
 
     final cx = size.width / 2;
     final cy = size.height / 2;

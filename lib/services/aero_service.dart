@@ -9,6 +9,7 @@
 import 'dart:async';
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'sdr_ffi.dart';
 
 class AeroMessage {
@@ -46,13 +47,22 @@ class AeroMessage {
   static final _vassignRe = RegExp(
     r'^P (?:T_ASSIGN|C_ASSIGN\S*)\s+AES=([0-9A-Fa-f]{6})\s+GES=(\d+)\s+RX=([0-9.]+)\s+TX=([0-9.]+)');
 
+  /* P-channel SU line: "P <TYPE> AES=XXXXXX GES=XX ..." or "P <TYPE> SatID=..." */
+  static final _psuRe = RegExp(
+    r'^P (\w+)\s+(?:AES=([0-9A-Fa-f]{6})\s+GES=(\d+))?');
+
   /// True if an AeroMessage is a voice channel assignment from P-channel.
   bool get isVoiceAssign => suType == 'VASSIGN';
+
+  /// True if this is a P-channel signaling unit (not ACARS text).
+  bool get isPchanSu => suType == 'VASSIGN' || suType == 'PCALL' || suType == 'PCHAN';
 
   /// Parse from native format:
   ///   ACARS:   "AES=XXXXXX GES=XX LEN=XXX\ntext\n...\n\n"
   ///   CALL:    "CALL CH=XX AES=XXXXXX GES=XX TYPE=distress RX=XXXXX TX=XXXXX\n"
   ///   VASSIGN: "P T_ASSIGN AES=XXXXXX GES=XX RX=XXXX.XXXX TX=XXXX.XXXX\n"
+  ///   PCHAN:   "P ACK AES=XXXXXX GES=XX 0102030405\n"
+  ///   SAT_ID:  "P SAT_ID SatID=...\n" or "P SAT_BRD GES=...\n"
   factory AeroMessage.parse(String line) {
     // Try voice assignment first
     final vm = _vassignRe.firstMatch(line);
@@ -84,6 +94,37 @@ class AeroMessage {
         callRxFreq: ((double.tryParse(cm.group(5)!) ?? 0) * 1e6).round(),
         callTxFreq: ((double.tryParse(cm.group(6)!) ?? 0) * 1e6).round(),
         callChannel: int.tryParse(cm.group(1)!) ?? 0,
+        timestamp: DateTime.now(),
+      );
+    }
+
+    // Try P-channel SU (non-assignment): "P ACK AES=XXXXXX GES=XX ..."
+    // or SAT broadcasts: "P SAT_ID SatID=..." / "P SAT_BRD GES=..."
+    final pm = _psuRe.firstMatch(line);
+    if (pm != null) {
+      final typeStr = pm.group(1)!;
+      final aes = pm.group(2);
+      final ges = pm.group(3);
+      return AeroMessage(
+        crcOk: true, suType: 'PCHAN',
+        hexBytes: line,
+        aesId: aes?.toUpperCase() ?? '',
+        gesId: int.tryParse(ges ?? '') ?? 0,
+        length: 0,
+        callType: typeStr,
+        callRxFreq: 0, callTxFreq: 0, callChannel: 0,
+        timestamp: DateTime.now(),
+      );
+    }
+
+    // Try CALLPROG
+    if (line.startsWith('CALLPROG ')) {
+      return AeroMessage(
+        crcOk: true, suType: 'PCALL',
+        hexBytes: line,
+        aesId: '', gesId: 0, length: 0,
+        callType: 'CALLPROG',
+        callRxFreq: 0, callTxFreq: 0, callChannel: 0,
         timestamp: DateTime.now(),
       );
     }
@@ -193,12 +234,39 @@ class AeroService {
         bool hadVoiceMsg = false;
         if (n > 0) {
           final text = outPtr.cast<Utf8>().toDartString(length: n);
+          if (text.contains('AES=')) {
+            debugPrint('POLL_HAS_ACARS: ${text.substring(0, text.length < 80 ? text.length : 80)}');
+          }
+          // Group ACARS header+body across blank lines, emit standalone lines for P-channel
+          String? acarsHeader;
+          StringBuffer acarsBody = StringBuffer();
           for (final line in text.split('\n')) {
-            if (line.trim().isNotEmpty) {
-              final msg = AeroMessage.parse(line);
+            final trimmed = line.trim();
+            if (trimmed.isEmpty) {
+              if (acarsHeader != null) {
+                _messageCtrl.add(AeroMessage.parse('$acarsHeader\n${acarsBody.toString()}'));
+                acarsHeader = null;
+                acarsBody = StringBuffer();
+              }
+              continue;
+            }
+            if (acarsHeader != null) {
+              acarsBody.writeln(trimmed);
+              continue;
+            }
+            if (trimmed.startsWith('P ') || trimmed.startsWith('CALL ') || trimmed.startsWith('CALLPROG')) {
+              final msg = AeroMessage.parse(trimmed);
               _messageCtrl.add(msg);
               if (msg.isVoiceAssign) hadVoiceMsg = true;
+            } else if (trimmed.startsWith('AES=') || trimmed.startsWith('LEN=')) {
+              acarsHeader = trimmed;
+              acarsBody = StringBuffer();
+            } else {
+              _messageCtrl.add(AeroMessage.parse(trimmed));
             }
+          }
+          if (acarsHeader != null) {
+            _messageCtrl.add(AeroMessage.parse('$acarsHeader\n${acarsBody.toString()}'));
           }
         }
         /* Voice-follow silence timeout: if following a voice channel

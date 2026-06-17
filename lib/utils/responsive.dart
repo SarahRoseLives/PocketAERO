@@ -5,9 +5,10 @@ class Breakpoints {
   static const double phoneMax  = 599.0;   // <= this = phone portrait / small
   static const double tabletMin = 600.0;   // >= this = tablet / landscape
 
-  /// True when screen is wide enough for side-by-side (tablet landscape)
+  /// True when screen is wide enough for side-by-side (tablet landscape).
+  /// Uses shortestSide so landscape phones don't get tablet layout.
   static bool isTablet(BuildContext context) =>
-      MediaQuery.of(context).size.width >= tabletMin;
+      MediaQuery.of(context).size.shortestSide >= tabletMin;
 }
 
 /// Responsive scaling for font sizes, chip sizes, and spacers.
