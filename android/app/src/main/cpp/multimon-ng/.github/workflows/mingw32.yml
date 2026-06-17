@@ -1,0 +1,45 @@
+name: MinGW32 Cross-Compile
+
+on: [push]
+
+jobs:
+  build-mingw32:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v6
+    
+    - name: Install MinGW-w64 for 32-bit
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64-i686 g++-mingw-w64-i686
+    
+    - name: Configure with CMake
+      run: |
+        mkdir build-mingw32
+        cd build-mingw32
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchain-mingw32.cmake
+    
+    - name: Build
+      run: |
+        cd build-mingw32
+        make
+    
+    - name: Install Wine
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get update
+        sudo apt-get install -y wine32:i386 sox
+    
+    - name: Run tests with Wine
+      run: |
+        WINE_CMD=wine MULTIMON=./build-mingw32/multimon-ng.exe GEN_NG=./build-mingw32/gen-ng.exe ./test/run_tests.sh
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: multimon-ng-win32
+        path: |
+          build-mingw32/multimon-ng.exe
+          build-mingw32/gen-ng.exe
+        retention-days: 30

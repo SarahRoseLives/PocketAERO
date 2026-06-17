@@ -1,0 +1,43 @@
+name: MinGW64 Cross-Compile
+
+on: [push]
+
+jobs:
+  build-mingw64:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v6
+    
+    - name: Install MinGW-w64 for 64-bit
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+    
+    - name: Configure with CMake
+      run: |
+        mkdir build-mingw64
+        cd build-mingw64
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchain-mingw64.cmake
+    
+    - name: Build
+      run: |
+        cd build-mingw64
+        make
+    
+    - name: Install Wine
+      run: |
+        sudo apt-get install -y wine64 sox
+    
+    - name: Run tests with Wine
+      run: |
+        WINE_CMD=wine MULTIMON=./build-mingw64/multimon-ng.exe GEN_NG=./build-mingw64/gen-ng.exe ./test/run_tests.sh
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: multimon-ng-win64
+        path: |
+          build-mingw64/multimon-ng.exe
+          build-mingw64/gen-ng.exe
+        retention-days: 30

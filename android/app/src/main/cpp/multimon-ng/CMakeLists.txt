@@ -1,0 +1,202 @@
+cmake_minimum_required( VERSION 2.8.12...3.10 )
+
+# The "MSVC" flag isn't set until the "project" command
+# is called.  Let's just check the operating system.
+if( NOT WIN32 )
+	project( multimon-ng C )
+else( NOT WIN32 )
+	# Visual Studio C compiler doesn't support C99 (i.e. stdbool.h);
+	# so use the Visual Studio C++ compiler instead
+	project( multimon-ng CXX )
+endif( NOT WIN32 )
+
+set( TARGET "${PROJECT_NAME}" )
+set( VERSION "1.5.0" )
+set( MAJOR "1" )
+set( MINOR "5" )
+set( PATCH "0" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra" )
+
+if( WIN32 )
+	add_definitions( "-DWIN32_AUDIO" "-DONLY_RAW" "-DWINDOWS" )
+	link_libraries( "winmm" )
+	set( SOURCES ${SOURCES}
+		"win32_soundin.c"
+		)
+elseif( UNIX )
+	find_package( X11 )
+	if ( X11_FOUND )
+		option( X11_SUPPORT "Enable X11 display support" ${X11_FOUND} )
+		mark_as_advanced( X11_SUPPORT )
+	endif( X11_FOUND )
+	find_package( PulseAudio )
+	if ( PULSEAUDIO_FOUND )
+		option( PULSE_AUDIO_SUPPORT "Enable pulse audio support" ${PULSEAUDIO_FOUND} )
+		mark_as_advanced( PULSE_AUDIO_SUPPORT )
+	endif( PULSEAUDIO_FOUND )
+
+	# Check if we can use the GCC/llvm __builtin_popcount
+	include( CheckCSourceCompiles )
+	check_c_source_compiles(
+		"int main() { __builtin_popcount(42); return 0; }" USE_BUILTIN_POPCOUNT )
+
+	set( INSTALL_MAN_DIR "${CMAKE_INSTALL_PREFIX}/share/man" )
+	install( FILES multimon-ng.1 DESTINATION "${INSTALL_MAN_DIR}/man1" )
+endif( WIN32 )
+
+if( X11_SUPPORT )
+	include_directories( ${X11_INCLUDE_DIR} )
+	link_libraries( ${X11_LIBRARIES} )
+	set( SOURCES ${SOURCES}
+		xdisplay.c
+		demod_display.c
+	)
+else( X11_SUPPORT )
+	add_definitions( "-DNO_X11" )
+endif( X11_SUPPORT )
+
+# SDL3 phosphor scope support
+find_package( SDL3 QUIET )
+if( SDL3_FOUND )
+	option( SDL3_SCOPE "Enable SDL3 digital phosphor scope" ON )
+	mark_as_advanced( SDL3_SCOPE )
+endif( SDL3_FOUND )
+
+if( SDL3_SCOPE )
+	set( SOURCES ${SOURCES}
+		demod_sdl_scope.c
+	)
+else( SDL3_SCOPE )
+	add_definitions( "-DNO_SDL3" )
+endif( SDL3_SCOPE ) 
+
+if( PULSE_AUDIO_SUPPORT )
+	include_directories( ${PULSEAUDIO_INCLUDE_DIR} )
+	find_library( PULSE_SIMPLE NAMES pulse-simple REQUIRED )
+	link_libraries( ${PULSEAUDIO_LIBRARY} ${PULSE_SIMPLE} )
+	add_definitions( "-DPULSE_AUDIO" )
+elseif( APPLE )
+	# macOS: Use Core Audio ProcessTap for system audio capture (macOS 14.2+)
+	find_library( COREAUDIO_LIBRARY CoreAudio REQUIRED )
+	find_library( AUDIOTOOLBOX_LIBRARY AudioToolbox REQUIRED )
+	find_library( COREFOUNDATION_LIBRARY CoreFoundation REQUIRED )
+	find_library( FOUNDATION_LIBRARY Foundation REQUIRED )
+	link_libraries( ${COREAUDIO_LIBRARY} ${AUDIOTOOLBOX_LIBRARY} ${COREFOUNDATION_LIBRARY} ${FOUNDATION_LIBRARY} )
+	add_definitions( "-DCOREAUDIO" "-DHAS_PROCESSTAP" )
+	set( MACOS_AUDIO_SOURCE macos_audio.m )
+	# Enable Objective-C for .m files
+	enable_language( OBJC )
+else( PULSE_AUDIO_SUPPORT )
+	add_definitions( "-DDUMMY_AUDIO" )
+endif( PULSE_AUDIO_SUPPORT )
+
+if( NOT MSVC )
+	add_definitions( "-std=gnu11" )
+endif( NOT MSVC )
+add_definitions( "-DCHARSET_UTF8" )
+
+if ( EXISTS "${multimon-ng_SOURCE_DIR}/bch.c" )
+	set( BCH_SOURCE bch.c )
+elseif ( EXISTS "${multimon-ng_SOURCE_DIR}/BCHCode.c" )
+	set( BCH_SOURCE BCHCode.c )
+else()
+	message(STATUS "Using the BCH decoder stub")
+	set( BCH_SOURCE bch_stub.c )
+endif()
+
+set( SOURCES ${SOURCES}
+	${BCH_SOURCE} )
+
+set( HEADERS ${HEADERS}
+    	multimon.h
+    	gen.h
+    	filter.h
+    	filter-i386.h
+		cJSON.h
+		bch.h
+)
+
+set( SOURCES ${SOURCES}
+	unixinput.c
+	uart.c
+	pocsag.c
+	selcall.c
+	hdlc.c
+	demod_zvei1.c
+	demod_zvei2.c
+	demod_zvei3.c
+	demod_pzvei.c
+	demod_dzvei.c
+	demod_ccir.c
+	demod_eia.c
+	demod_eea.c
+	demod_ufsk12.c
+	demod_poc24.c
+	demod_poc12.c
+	demod_poc5.c
+	demod_hapn48.c
+	demod_fsk96.c
+	demod_dtmf.c
+	demod_clipfsk.c
+	demod_fmsfsk.c
+	demod_afsk24.c
+	demod_afsk24_3.c
+	demod_afsk24_2.c
+	demod_afsk12.c
+	demod_flex.c
+	demod_flex_next.c
+	costabi.c
+	costabf.c
+	clip.c
+	fms.c
+	demod_eas.c
+	demod_morse.c
+	demod_dumpcsv.c
+	demod_x10.c
+	cJSON.c
+	${MACOS_AUDIO_SOURCE}
+)
+
+
+add_executable( "${TARGET}" ${SOURCES} ${HEADERS} )
+set_property(TARGET "${TARGET}" PROPERTY LINKER_LANGUAGE C)
+target_compile_definitions( "${TARGET}" PRIVATE MAX_VERBOSE_LEVEL=3 )
+target_link_libraries( "${TARGET}" m )
+if( SDL3_SCOPE )
+	target_link_libraries( "${TARGET}" SDL3::SDL3 )
+endif( SDL3_SCOPE )
+install(TARGETS multimon-ng DESTINATION bin)
+
+# gen-ng signal generator
+option( BUILD_GEN_NG "Build gen-ng signal generator" ON )
+if( BUILD_GEN_NG )
+	set( GEN_SOURCES
+		gen.c
+		gen_dtmf.c
+		gen_sin.c
+		gen_zvei.c
+		gen_hdlc.c
+		gen_uart.c
+		gen_clipfsk.c
+		gen_flex.c
+		gen_pocsag.c
+		gen_scope.c
+		costabi.c
+		${BCH_SOURCE}
+	)
+	add_executable( gen-ng ${GEN_SOURCES} gen.h )
+	target_compile_definitions( gen-ng PRIVATE MAX_VERBOSE_LEVEL=1 )
+	if( WIN32 )
+		target_compile_definitions( gen-ng PRIVATE DUMMY_AUDIO ONLY_RAW WINDOWS )
+		target_link_libraries( gen-ng winmm )
+	elseif( APPLE )
+		target_compile_definitions( gen-ng PRIVATE DUMMY_AUDIO CHARSET_UTF8 )
+		target_link_libraries( gen-ng m )
+	else()
+		target_compile_definitions( gen-ng PRIVATE CHARSET_UTF8 )
+		target_link_libraries( gen-ng m )
+	endif()
+	set_property(TARGET gen-ng PROPERTY LINKER_LANGUAGE C)
+	install(TARGETS gen-ng DESTINATION bin)
+endif()
+

@@ -1,0 +1,894 @@
+/*
+ *      gen.c -- generate different test signals
+ *
+ *      Copyright (C) 1997
+ *          Thomas Sailer (sailer@ife.ee.ethz.ch, hb9jnx@hb9w.che.eu)
+ *
+ *      Copyright (C) 2012/2013
+ *          Elias Oenal    (EliasOenal@gmail.com)
+ *
+ *      This program is free software; you can redistribute it and/or modify
+ *      it under the terms of the GNU General Public License as published by
+ *      the Free Software Foundation; either version 2 of the License, or
+ *      (at your option) any later version.
+ *
+ *      This program is distributed in the hope that it will be useful,
+ *      but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *      MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *      GNU General Public License for more details.
+ *
+ *      You should have received a copy of the GNU General Public License
+ *      along with this program; if not, write to the Free Software
+ *      Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ */
+
+/* ---------------------------------------------------------------------- */
+#ifdef _MSC_VER
+#include "msvc_support.h"
+#endif
+
+#include "gen.h"
+#include <sys/types.h>
+#include <sys/stat.h>
+#ifdef _MSC_VER
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+#ifndef ONLY_RAW
+#include <sys/wait.h>
+#endif
+#include <getopt.h>
+#include <string.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <math.h>
+#include <stdlib.h>
+
+#ifdef SUN_AUDIO
+#include <sys/audioio.h>
+#include <stropts.h>
+#include <sys/conf.h>
+#elif DUMMY_AUDIO
+    // NO AUDIO FOR OSX :/
+#else /* SUN_AUDIO */
+#include <sys/soundcard.h>
+#include <sys/ioctl.h>
+#endif /* SUN_AUDIO */
+
+/* ---------------------------------------------------------------------- */
+
+#ifdef __sun__
+#include <stdarg.h>
+
+int snprintf(char *buf, size_t sz, const char *fmt, ...)
+{
+	int i;
+
+	va_list arg;
+	va_start(arg, fmt);
+	i = vsprintf(buf, fmt, arg);
+	va_end(arg);
+	return i;
+}
+
+#endif /* __sun__ */
+
+/* ---------------------------------------------------------------------- */
+
+static const char *allowed_types[] = {
+	"raw", "aiff", "au", "hcom", "sf", "voc", "cdr", "dat", 
+	"smp", "wav", "maud", "vwe", "mp3", "mp4", "ogg", "flac", NULL
+};
+
+/* Extension to type mapping (extensions that differ from type name) */
+static const struct { const char *ext; const char *type; } ext_map[] = {
+	{ "aif", "aiff" },
+	{ NULL, NULL }
+};
+
+/* Detect output type from filename extension, returns NULL if unknown */
+static const char *detect_type_from_extension(const char *fname)
+{
+	if (!fname)
+		return NULL;
+
+	const char *dot = strrchr(fname, '.');
+	if (!dot || dot == fname)
+		return NULL;
+
+	const char *ext = dot + 1;
+	size_t ext_len = strlen(ext);
+	if (ext_len == 0 || ext_len > 8)
+		return NULL;
+
+	/* Convert extension to lowercase for comparison */
+	char ext_lower[16];
+	for (size_t i = 0; i <= ext_len && i < sizeof(ext_lower) - 1; i++)
+		ext_lower[i] = (ext[i] >= 'A' && ext[i] <= 'Z') ? ext[i] + 32 : ext[i];
+
+	/* Check extension map first (for aliases like .aif -> aiff) */
+	for (int i = 0; ext_map[i].ext; i++) {
+		if (!strcmp(ext_lower, ext_map[i].ext))
+			return ext_map[i].type;
+	}
+
+	/* Check if extension matches a known type directly */
+	for (const char **t = allowed_types; *t; t++) {
+		if (!strcmp(ext_lower, *t))
+			return *t;
+	}
+
+	return NULL;
+}
+
+/* ---------------------------------------------------------------------- */
+
+typedef void (*t_init_procs)(struct gen_params *, struct gen_state *);
+typedef int (*t_gen_procs)(signed short *, int, struct gen_params *, struct gen_state *);
+
+static const t_init_procs init_procs[] = {
+	gen_init_dtmf, gen_init_sine, gen_init_zvei, gen_init_hdlc, gen_init_uart, gen_init_clipfsk, gen_init_flex, gen_init_pocsag
+};
+
+static const t_gen_procs gen_procs[] = {
+	gen_dtmf, gen_sine, gen_zvei, gen_hdlc, gen_uart, gen_clipfsk, gen_flex, gen_pocsag
+};
+
+/* ---------------------------------------------------------------------- */
+
+#define MAX_GEN 16
+static struct gen_params params[MAX_GEN];
+static struct gen_state state[MAX_GEN];
+static int num_gen = 0;
+
+/* ---------------------------------------------------------------------- */
+
+static int process_buffer(short *buf, int len)
+{
+	int i;
+	int totnum = 0, num;
+
+	memset(buf, 0, len*sizeof(buf[0]));
+	for (i = 0; i < num_gen; i++) {
+		if (params[i].type >= sizeof(gen_procs)/sizeof(gen_procs[0]))
+			break;
+		if (!gen_procs[params[i].type])
+			break;
+		num = gen_procs[params[i].type](buf, len, params+i, state+i);
+		if (num > totnum)
+			totnum = num;
+	}
+	return totnum;
+}
+
+/* ---------------------------------------------------------------------- */
+#ifdef SUN_AUDIO
+
+static void output_sound(unsigned int sample_rate, const char *ifname)
+{
+        audio_info_t audioinfo;
+        audio_info_t audioinfo2;
+	audio_device_t audiodev;
+	int fd;
+	short buffer[8192];
+	short *sp;
+	int i, num, num2;
+
+	if ((fd = open(ifname ? ifname : "/dev/audio", O_WRONLY)) < 0) {
+		perror("open");
+		exit (10);
+	}
+        if (ioctl(fd, AUDIO_GETDEV, &audiodev) == -1) {
+		perror("ioctl: AUDIO_GETDEV");
+		exit (10);
+        }
+        AUDIO_INITINFO(&audioinfo);
+        audioinfo.record.sample_rate = sample_rate;
+        audioinfo.record.channels = 1;
+        audioinfo.record.precision = 16;
+        audioinfo.record.encoding = AUDIO_ENCODING_LINEAR;
+        /*audioinfo.record.gain = 0x20;
+	  audioinfo.record.port = AUDIO_LINE_IN;
+	  audioinfo.monitor_gain = 0;*/
+        if (ioctl(fd, AUDIO_SETINFO, &audioinfo) == -1) {
+		perror("ioctl: AUDIO_SETINFO");
+		exit (10);
+        }     
+        if (ioctl(fd, I_FLUSH, FLUSHW) == -1) {
+		perror("ioctl: I_FLUSH");
+		exit (10);
+        }
+        if (ioctl(fd, AUDIO_GETINFO, &audioinfo2) == -1) {
+		perror("ioctl: AUDIO_GETINFO");
+		exit (10);
+        }
+        fprintf(stdout, "Audio device: name %s, ver %s, config %s, "
+		"sampling rate %d\n", audiodev.name, audiodev.version,
+		audiodev.config, audioinfo.record.sample_rate);
+	do {
+		num2 = num = process_buffer(sp = buffer, sizeof(buffer)/sizeof(buffer[0]));
+		while (num > 0) {
+			i = write(fd, sp, num*sizeof(sp[0]));
+			if (i < 0 && errno != EAGAIN) {
+				perror("write");
+				exit(4);
+			}
+			if (i > 0) {
+				if (i % sizeof(sp[0]))
+					fprintf(stderr, "gen: warning: write wrote noninteger number of samples\n");
+				num -= i / sizeof(sp[0]);
+			}
+		}
+	} while (num2 > 0);
+	close(fd);
+}
+#elif DUMMY_AUDIO
+static void output_sound(unsigned int sample_rate, const char *ifname)
+{
+    //printf("DUMMY SOUND OUT!");
+    //fflush(stdout);
+}
+#else /* SUN_AUDIO */
+/* ---------------------------------------------------------------------- */
+
+static void output_sound(unsigned int sample_rate, const char *ifname)
+{
+        int sndparam;
+	int fd;
+	union {
+		short s[8192];
+		unsigned char b[8192];
+	} b;
+	int i;
+	short *sp;
+	unsigned char *bp;
+	int fmt = 0, num, num2;
+
+	if ((fd = open(ifname ? ifname : "/dev/dsp", O_WRONLY)) < 0) {
+		perror("open");
+		exit (10);
+	}
+        sndparam = AFMT_S16_LE; /* we want 16 bits/sample signed */
+        /* little endian; works only on little endian systems! */
+        if (ioctl(fd, SNDCTL_DSP_SETFMT, &sndparam) == -1) {
+		perror("ioctl: SNDCTL_DSP_SETFMT");
+		exit (10);
+	}
+        if (sndparam != AFMT_S16_LE) {
+		fmt = 1;
+		sndparam = AFMT_U8;
+		if (ioctl(fd, SNDCTL_DSP_SETFMT, &sndparam) == -1) {
+			perror("ioctl: SNDCTL_DSP_SETFMT");
+			exit (10);
+		}
+		if (sndparam != AFMT_U8) {
+			perror("ioctl: SNDCTL_DSP_SETFMT");
+			exit (10);
+		}
+        }
+        sndparam = 0;   /* we want only 1 channel */
+        if (ioctl(fd, SNDCTL_DSP_STEREO, &sndparam) == -1) {
+		perror("ioctl: SNDCTL_DSP_STEREO");
+		exit (10);
+	}
+        if (sndparam != 0) {
+                fprintf(stderr, "gen: Error, cannot set the channel "
+                        "number to 1\n");
+                exit (10);
+        }
+        sndparam = sample_rate; 
+        if (ioctl(fd, SNDCTL_DSP_SPEED, &sndparam) == -1) {
+		perror("ioctl: SNDCTL_DSP_SPEED");
+		exit (10);
+	}
+        if ((10*abs(sndparam-sample_rate)) > sample_rate) {
+		perror("ioctl: SNDCTL_DSP_SPEED");
+		exit (10);
+	}
+        if (sndparam != sample_rate) {
+                fprintf(stderr, "Warning: Sampling rate is %u, "
+                        "requested %u\n", sndparam, sample_rate);
+        }
+#if 0
+        sndparam = 4;
+        if (ioctl(fd, SOUND_PCM_SUBDIVIDE, &sndparam) == -1) {
+		perror("ioctl: SOUND_PCM_SUBDIVIDE");
+        }
+        if (sndparam != 4) {
+		perror("ioctl: SOUND_PCM_SUBDIVIDE");
+	}
+#endif
+	do {
+		num2 = num = process_buffer(b.s, sizeof(b.s)/sizeof(b.s[0]));
+		if (fmt) {
+			for (bp = b.b, sp = b.s, i = sizeof(b.s)/sizeof(b.s[0]); i > 0; i--, bp++, sp++)
+				*bp = 0x80 + (*sp >> 8);
+			bp = b.b;
+			while (num > 0) {
+				i = write(fd, bp, num*sizeof(bp[0]));
+				if (i < 0 && errno != EAGAIN) {
+					perror("write");
+					exit(4);
+				}
+				if (i > 0) {
+					if (i % sizeof(bp[0]))
+						fprintf(stderr, "gen: warning: write wrote noninteger number of samples\n");
+					num -= i / sizeof(bp[0]);
+				}
+			}
+		} else {
+			sp = b.s;
+			while (num > 0) {
+				i = write(fd, sp, num*sizeof(sp[0]));
+				if (i < 0 && errno != EAGAIN) {
+					perror("write");
+					exit(4);
+				}
+				if (i > 0) {
+					if (i % sizeof(sp[0]))
+						fprintf(stderr, "gen: warning: write wrote noninteger number of samples\n");
+					num -= i / sizeof(sp[0]);
+				}
+			}
+		}
+	} while (num2 > 0);
+	close(fd);
+}
+#endif /* SUN_AUDIO */
+
+/* ---------------------------------------------------------------------- */
+
+#if !defined(ONLY_RAW)
+/* Check if sox is available, returns 1 if found, 0 if not */
+static int check_sox_available(void)
+{
+	/* Check common locations and PATH */
+	if (access("/usr/bin/sox", X_OK) == 0) return 1;
+	if (access("/usr/local/bin/sox", X_OK) == 0) return 1;
+	if (access("/opt/homebrew/bin/sox", X_OK) == 0) return 1;
+	if (access("/opt/local/bin/sox", X_OK) == 0) return 1;
+
+	/* Check PATH using which */
+	int ret = system("which sox >/dev/null 2>&1");
+	return (ret == 0);
+}
+#endif
+
+/* Callback context for scope text output */
+struct scope_write_ctx {
+	int fd;
+};
+
+static void scope_write_cb(void *ctx, const short *samples, int count)
+{
+	struct scope_write_ctx *wctx = (struct scope_write_ctx *)ctx;
+	int i = write(wctx->fd, samples, count * sizeof(short));
+	if (i < 0) {
+		perror("write");
+		exit(4);
+	}
+}
+
+static void output_scope_file(const char *fname, const char *type, const char *text)
+{
+#if !defined(ONLY_RAW)
+	int pipedes[2];
+	int pid = 0, soxstat;
+#endif
+	int fd;
+	struct scope_write_ctx ctx;
+	int is_stdout = !strcmp(fname, "-");
+
+	if (!type || !strcmp(type, "raw")) {
+		if (is_stdout) {
+			fd = 1;
+#ifdef WINDOWS
+			setmode(fd, O_BINARY);
+#endif
+		} else {
+#ifdef WINDOWS
+			if ((fd = open(fname, O_WRONLY|O_CREAT|O_EXCL|O_BINARY, 0777)) < 0) {
+#else
+			if ((fd = open(fname, O_WRONLY|O_CREAT|O_EXCL, 0777)) < 0) {
+#endif
+				perror("open");
+				exit(10);
+			}
+		}
+	} else {
+#if defined(ONLY_RAW)
+		fprintf(stderr, "error: non-raw output requires sox\n");
+		exit(10);
+#else
+		if (!check_sox_available()) {
+			fprintf(stderr, "Error: sox is required for .%s output\n", type);
+			exit(10);
+		}
+		if (pipe(pipedes)) {
+			perror("pipe");
+			exit(10);
+		}
+		if (!(pid = fork())) {
+			char srate[8];
+			dup2(pipedes[0], 0);
+			close(pipedes[0]);
+			close(pipedes[1]);
+			sprintf(srate, "%d", SAMPLE_RATE);
+			execlp("sox", "sox", "-t", "raw", "-esigned-integer",
+			       "-b", "16", "-r", srate, "-", fname, NULL);
+			perror("execlp");
+			exit(10);
+		}
+		if (pid < 0) {
+			perror("fork");
+			exit(10);
+		}
+		fd = pipedes[1];
+		close(pipedes[0]);
+#endif
+	}
+
+	gen_init_scope();
+	ctx.fd = fd;
+	gen_scope(text, strlen(text), scope_write_cb, &ctx);
+
+	close(fd);
+#if !defined(ONLY_RAW)
+	if (pid > 0)
+		waitpid(pid, &soxstat, 0);
+#endif
+}
+
+static void output_file(unsigned int sample_rate, const char *fname, const char *type)
+{
+#if !defined(ONLY_RAW)
+	struct stat statbuf;
+	int pipedes[2];
+	int pid = 0, soxstat;
+#endif
+	int fd;
+	int i, num, num2;
+	short buffer[8192];	
+	short *sp;
+	int is_stdout = !strcmp(fname, "-");
+
+	/*
+	 * if the input type is not raw, sox is started to convert the
+	 * samples to the requested format
+	 */
+	if (!type || !strcmp(type, "raw")) {
+		if (is_stdout) {
+			fd = 1;  /* stdout */
+#ifdef WINDOWS
+			setmode(fd, O_BINARY);
+#endif
+		} else {
+#ifdef WINDOWS
+			if ((fd = open(fname, O_WRONLY|O_CREAT|O_EXCL|O_BINARY, 0777)) < 0) {
+#else
+			if ((fd = open(fname, O_WRONLY|O_CREAT|O_EXCL, 0777)) < 0) {
+#endif
+				perror("open");
+				exit(10);
+			}
+		}
+	} else {
+#if defined(ONLY_RAW)
+		fprintf(stderr, "error: non-raw output requires sox (not available on this platform)\n");
+		exit(10);
+#else
+		/* Check sox availability before attempting conversion */
+		if (!check_sox_available()) {
+			fprintf(stderr, "Error: sox is required for .%s output but was not found.\n", type);
+			fprintf(stderr, "Install sox or use raw output (-t raw) and convert manually:\n");
+			fprintf(stderr, "  sox -R -t raw -esigned-integer -b16 -r %d input.raw -t %s '%s'\n",
+					sample_rate, type, fname);
+			exit(10);
+		}
+		if (!is_stdout && !stat(fname, &statbuf)) {
+			fprintf(stderr, "file already exists: %s\n",fname);
+			exit(10);
+		}
+		if (pipe(pipedes)) {
+			perror("pipe");
+			exit(10);
+		}
+		if (!(pid = fork())) {
+			char srate[8];
+			/*
+			 * child starts here... first set up filedescriptors,
+			 * then start sox...
+			 */
+			snprintf(srate, sizeof(srate), "%d", sample_rate);
+			close(pipedes[1]); /* close writing pipe end */
+			close(0); /* close standard input */
+			if (dup2(pipedes[0], 0) < 0) 
+				perror("dup2");
+			close(pipedes[0]); /* close reading pipe end */
+			execlp("sox", "sox", "-R",
+			       "-t", "raw", "-esigned-integer", "-b16", "-r", srate, "-",
+			       "-t", type, is_stdout ? "-" : fname,
+			       NULL);
+			perror("execlp");
+			exit(10);
+		}
+		if (pid < 0) {
+			perror("fork");
+			exit(10);
+		}
+		close(pipedes[0]); /* close reading pipe end */
+		fd = pipedes[1];
+#endif
+	}
+	/*
+	 * modulate
+	 */
+	do {
+		num2 = num = process_buffer(sp = buffer, sizeof(buffer)/sizeof(buffer[0]));
+		while (num > 0) {
+			i = write(fd, sp, num*sizeof(sp[0]));
+			if (i < 0 && errno != EAGAIN) {
+				perror("write");
+				exit(4);
+			}
+			if (i > 0) {
+				if (i % sizeof(sp[0]))
+					fprintf(stderr, "gen: warning: write wrote noninteger number of samples\n");
+				num -= i / sizeof(sp[0]);
+			}
+		}
+	} while (num2 > 0);
+	close(fd);
+#if !defined(ONLY_RAW)
+	if (pid > 0)
+		waitpid(pid, &soxstat, 0);
+#endif
+}
+
+/* ---------------------------------------------------------------------- */
+
+static const char usage_str[] = "Generates test signals\n"
+"  -t <type>  : output file type (auto-detected from extension if not specified)\n"
+"               Types other than raw require sox. Supported: raw, wav, flac, mp3, ogg, etc.\n"
+"  -a <ampl>  : amplitude\n"
+"  -d <str>   : encode DTMF string\n"
+"  -z <str>   : encode ZVEI string\n"
+"  -s <freq>  : encode sine\n"
+"  -u <text>  : encode uart string\n"
+"  -p <text>  : encode hdlc packet\n"
+"  -c <str>   : encode CLIP FSK string\n"
+"  -f <msg>   : encode FLEX pager message\n"
+"     -F <capcode> : FLEX pager address (default: 1234567)\n"
+"  -P <msg>   : encode POCSAG pager message\n"
+"     -A <address> : POCSAG pager address/capcode (default: 1234567)\n"
+"     -B <baud>    : POCSAG baud rate: 512, 1200, 2400 (default: 1200)\n"
+"     -N           : POCSAG numeric mode (function 0)\n"
+"     -I           : POCSAG inverted output polarity\n"
+"  -S <text>  : encode text for SDL_SCOPE display\n"
+"  -e <0-3>   : inject 0-3 bit errors per codeword (FLEX/POCSAG BCH testing)\n"
+"  -h         : this help\n";
+
+int main(int argc, char *argv[])
+{
+	int c;
+	int errflg = 0;
+	int type_explicit = 0;
+	char **otype;
+	char *output_type = "hw";
+	char *cp;
+	char *scope_text = NULL;
+
+	fprintf(stdout, "gen-ng - (C) 1997 by Tom Sailer HB9JNX/AE4WA\n"
+                    "         (C) 2012/2013 by Elias Oenal\n");	
+	while ((c = getopt(argc, argv, "t:a:d:s:z:p:u:c:f:F:e:P:A:B:S:NIh")) != EOF) {
+		switch (c) {
+		case 'h':
+		case '?':
+			errflg++;
+			break;
+
+		case 't':
+			type_explicit = 1;
+			for (otype = (char **)allowed_types; *otype; otype++) 
+				if (!strcmp(*otype, optarg)) {
+					output_type = *otype;
+					goto outtypefound;
+				}
+			fprintf(stderr, "invalid output type \"%s\"\n"
+				"allowed types: ", optarg);
+			for (otype = (char **)allowed_types; *otype; otype++) 
+				fprintf(stderr, "%s ", *otype);
+			fprintf(stderr, "\n");
+			errflg++;
+		outtypefound:
+			break;
+
+		case 'a':
+			if (num_gen <= 0) {
+				fprintf(stderr, "gen: no generator selected\n");
+				errflg++;
+			}
+ 			if (!(cp = strstr(optarg, "dB")))
+				cp = strstr(optarg, "db");
+			if (cp) {
+				*cp = '\0';
+				params[num_gen-1].ampl = 16384.0 * pow(10.0, strtod(optarg, NULL) / 20.0);
+			} else {
+				params[num_gen-1].ampl = 16384.0 * strtod(optarg, NULL);
+			}
+			break;
+
+		case 'd':
+			num_gen++;
+			if (num_gen > MAX_GEN) {
+				fprintf(stderr, "too many generators\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].type = gentype_dtmf;
+			params[num_gen-1].ampl = 16384;
+			params[num_gen-1].p.dtmf.duration = MS(100);
+			params[num_gen-1].p.dtmf.pause = MS(100);
+			strncpy(params[num_gen-1].p.dtmf.str, optarg, sizeof(params[num_gen-1].p.dtmf.str));
+			break;
+
+		case 's':
+			num_gen++;
+			if (num_gen > MAX_GEN) {
+				fprintf(stderr, "too many generators\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].type = gentype_sine;
+			params[num_gen-1].ampl = 16384;
+			params[num_gen-1].p.sine.duration = MS(1000);
+			params[num_gen-1].p.sine.freq = strtoul(optarg, NULL, 0);
+			break;
+
+		case 'z':
+			num_gen++;
+			if (num_gen > MAX_GEN) {
+				fprintf(stderr, "too many generators\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].type = gentype_zvei;
+			params[num_gen-1].ampl = 16384;
+			params[num_gen-1].p.zvei.duration = MS(50);
+			params[num_gen-1].p.zvei.pause = MS(50);
+			strncpy(params[num_gen-1].p.zvei.str, optarg, sizeof(params[num_gen-1].p.dtmf.str));
+			break;
+
+		case 'u':
+			num_gen++;
+			if (num_gen > MAX_GEN) {
+				fprintf(stderr, "too many generators\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].type = gentype_uart;
+			params[num_gen-1].ampl = 16384;
+			params[num_gen-1].p.uart.txdelay = 2;
+			strncpy((char *)params[num_gen-1].p.uart.pkt, optarg, sizeof(params[num_gen-1].p.uart.pkt));
+			params[num_gen-1].p.uart.pktlen = strlen((char *)params[num_gen-1].p.uart.pkt);
+			break;
+
+		case 'c':
+			num_gen++;
+			if (num_gen > MAX_GEN) {
+				fprintf(stderr, "too many generators\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].type = gentype_clipfsk;
+			params[num_gen-1].ampl = 16384;
+			params[num_gen-1].p.clipfsk.txdelay = 2;
+			strncpy((char *)params[num_gen-1].p.clipfsk.pkt, optarg, sizeof(params[num_gen-1].p.clipfsk.pkt));
+			params[num_gen-1].p.clipfsk.pktlen = strlen((char *)params[num_gen-1].p.clipfsk.pkt);
+			break;
+
+		case 'p':
+			num_gen++;
+			if (num_gen > MAX_GEN) {
+				fprintf(stderr, "too many generators\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].type = gentype_hdlc;
+			params[num_gen-1].ampl = 16384;
+			params[num_gen-1].p.hdlc.modulation = 0;
+			params[num_gen-1].p.hdlc.txdelay = 100;
+			params[num_gen-1].p.hdlc.pkt[0] = ('H') << 1;
+			params[num_gen-1].p.hdlc.pkt[1] = ('B') << 1;
+			params[num_gen-1].p.hdlc.pkt[2] = ('9') << 1;
+			params[num_gen-1].p.hdlc.pkt[3] = ('J') << 1;
+			params[num_gen-1].p.hdlc.pkt[4] = ('N') << 1;
+			params[num_gen-1].p.hdlc.pkt[5] = ('X') << 1;
+			params[num_gen-1].p.hdlc.pkt[6] = (0x00) << 1;
+			params[num_gen-1].p.hdlc.pkt[7] = ('A') << 1;
+			params[num_gen-1].p.hdlc.pkt[8] = ('E') << 1;
+			params[num_gen-1].p.hdlc.pkt[9] = ('4') << 1;
+			params[num_gen-1].p.hdlc.pkt[10] = ('W') << 1;
+			params[num_gen-1].p.hdlc.pkt[11] = ('A') << 1;
+			params[num_gen-1].p.hdlc.pkt[12] = (' ') << 1;
+			params[num_gen-1].p.hdlc.pkt[13] = ((0x00) << 1) | 1;
+			params[num_gen-1].p.hdlc.pkt[14] = 0x03;
+			params[num_gen-1].p.hdlc.pkt[15] = 0xf0;
+			strncpy((char *)params[num_gen-1].p.hdlc.pkt+16, optarg, 
+				sizeof(params[num_gen-1].p.hdlc.pkt)-16);
+			params[num_gen-1].p.hdlc.pktlen = 16 + 
+				strlen((char *)params[num_gen-1].p.hdlc.pkt+16);
+			break;
+
+		case 'f':
+			num_gen++;
+			if (num_gen > MAX_GEN) {
+				fprintf(stderr, "too many generators\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].type = gentype_flex;
+			params[num_gen-1].ampl = 16384;
+			params[num_gen-1].p.flex.capcode = 1234567;
+			params[num_gen-1].p.flex.cycle = 0;
+			params[num_gen-1].p.flex.frame = 0;
+			params[num_gen-1].p.flex.errors = 0;
+			strncpy(params[num_gen-1].p.flex.message, optarg,
+				sizeof(params[num_gen-1].p.flex.message) - 1);
+			break;
+
+		case 'F':
+			if (num_gen <= 0 || params[num_gen-1].type != gentype_flex) {
+				fprintf(stderr, "gen: -F requires -f first\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].p.flex.capcode = strtoul(optarg, NULL, 0);
+			break;
+
+		case 'e':
+			if (num_gen <= 0) {
+				fprintf(stderr, "gen: -e requires -f or -P first\n");
+				errflg++;
+				break;
+			}
+			if (params[num_gen-1].type == gentype_flex) {
+				params[num_gen-1].p.flex.errors = atoi(optarg);
+				if (params[num_gen-1].p.flex.errors < 0 || params[num_gen-1].p.flex.errors > 3) {
+					fprintf(stderr, "gen: -e must be 0-3\n");
+					errflg++;
+				}
+			} else if (params[num_gen-1].type == gentype_pocsag) {
+				params[num_gen-1].p.pocsag.errors = atoi(optarg);
+				if (params[num_gen-1].p.pocsag.errors < 0 || params[num_gen-1].p.pocsag.errors > 3) {
+					fprintf(stderr, "gen: -e must be 0-3\n");
+					errflg++;
+				}
+			} else {
+				fprintf(stderr, "gen: -e requires -f or -P first\n");
+				errflg++;
+			}
+			break;
+
+		case 'P':
+			if (num_gen >= MAX_GEN) {
+				fprintf(stderr, "gen: too many generators\n");
+				errflg++;
+				break;
+			}
+			params[num_gen].type = gentype_pocsag;
+			params[num_gen].ampl = 16384;
+			params[num_gen].p.pocsag.address = 1234567;
+			params[num_gen].p.pocsag.function = 3;  /* Default: alphanumeric */
+			params[num_gen].p.pocsag.baud = 1200;   /* Default: 1200 baud */
+			num_gen++;
+			strncpy(params[num_gen-1].p.pocsag.message, optarg,
+				sizeof(params[num_gen-1].p.pocsag.message) - 1);
+			break;
+
+		case 'A':
+			if (num_gen <= 0 || params[num_gen-1].type != gentype_pocsag) {
+				fprintf(stderr, "gen: -A requires -P first\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].p.pocsag.address = strtoul(optarg, NULL, 0);
+			if (params[num_gen-1].p.pocsag.address > 2097151) {
+				fprintf(stderr, "gen: POCSAG address must be 0-2097151\n");
+				errflg++;
+			}
+			break;
+
+		case 'B':
+			if (num_gen <= 0 || params[num_gen-1].type != gentype_pocsag) {
+				fprintf(stderr, "gen: -B requires -P first\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].p.pocsag.baud = atoi(optarg);
+			if (params[num_gen-1].p.pocsag.baud != 512 &&
+			    params[num_gen-1].p.pocsag.baud != 1200 &&
+			    params[num_gen-1].p.pocsag.baud != 2400) {
+				fprintf(stderr, "gen: -B must be 512, 1200, or 2400\n");
+				errflg++;
+			}
+			break;
+
+		case 'N':
+			if (num_gen <= 0 || params[num_gen-1].type != gentype_pocsag) {
+				fprintf(stderr, "gen: -N requires -P first\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].p.pocsag.function = 0;  /* Numeric mode */
+			break;
+
+		case 'S':
+			scope_text = optarg;
+			break;
+
+		case 'I':
+			if (num_gen <= 0 || params[num_gen-1].type != gentype_pocsag) {
+				fprintf(stderr, "gen: -I requires -P first\n");
+				errflg++;
+				break;
+			}
+			params[num_gen-1].p.pocsag.invert = 1;
+			break;
+		}
+	}
+		
+	if (errflg || (num_gen <= 0 && !scope_text)) {
+		(void)fprintf(stderr, usage_str);
+		exit(2);
+	}
+
+	memset(state, 0, sizeof(state));
+	for (c = 0; c < num_gen; c++) {
+		if (params[c].type >= sizeof(init_procs)/sizeof(init_procs[0]))
+			break;
+		if (!init_procs[params[c].type])
+			break;
+		init_procs[params[c].type](params+c, state+c);
+	}
+
+	/* If no explicit type and file specified, auto-detect from extension */
+	if (!type_explicit && !strcmp(output_type, "hw") && (argc - optind) >= 1) {
+		const char *detected = detect_type_from_extension(argv[optind]);
+		if (detected) {
+			output_type = (char *)detected;
+		} else {
+			/* Unknown extension, default to raw */
+			output_type = "raw";
+		}
+	}
+
+	if (!strcmp(output_type, "hw")) {
+		if (scope_text) {
+			fprintf(stderr, "Scope text output to sound device not supported\n");
+			exit(2);
+		}
+		if ((argc - optind) >= 1)
+			output_sound(SAMPLE_RATE, argv[optind]);
+		else 
+			output_sound(SAMPLE_RATE, NULL);
+		exit(0);
+	}
+	if ((argc - optind) < 1) {
+		(void)fprintf(stderr, "no destination file specified\n");
+		exit(4);
+	}
+
+	/* Handle scope text separately (uses callback API) */
+	if (scope_text) {
+		output_scope_file(argv[optind], output_type, scope_text);
+		exit(0);
+	}
+
+	output_file(SAMPLE_RATE, argv[optind], output_type);
+	exit(0);
+}
+
+

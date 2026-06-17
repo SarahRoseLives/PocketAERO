@@ -1,0 +1,168 @@
+/*
+ *      gen.h -- generate different test signals
+ *
+ *      Copyright (C) 1997
+ *          Thomas Sailer (sailer@ife.ee.ethz.ch, hb9jnx@hb9w.che.eu)
+ *
+ *      This program is free software; you can redistribute it and/or modify
+ *      it under the terms of the GNU General Public License as published by
+ *      the Free Software Foundation; either version 2 of the License, or
+ *      (at your option) any later version.
+ *
+ *      This program is distributed in the hope that it will be useful,
+ *      but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *      MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *      GNU General Public License for more details.
+ *
+ *      You should have received a copy of the GNU General Public License
+ *      along with this program; if not, write to the Free Software
+ *      Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ */
+
+/* ---------------------------------------------------------------------- */
+
+#include <stdint.h>
+
+#define SAMPLE_RATE 22050
+#define MS(x) ((float)(x)*SAMPLE_RATE/1000)
+
+extern const int costabi[0x400];
+
+#define COS(x) costabi[(((x)>>6)&0x3ffu)]
+
+enum gen_type { gentype_dtmf, gentype_sine, gentype_zvei, gentype_hdlc, gentype_uart, gentype_clipfsk, gentype_flex, gentype_pocsag };
+
+struct gen_params {
+	enum gen_type type;
+	int ampl;
+	union {
+		struct {
+			int duration;
+			int pause;
+			char str[256];
+		} dtmf;
+		struct {
+			int duration;
+			int freq;
+		} sine;
+		struct {
+			int duration;
+			int pause;
+			char str[256];
+		} zvei;
+		struct {
+			int modulation;
+			int txdelay;
+			int pktlen;
+			unsigned char pkt[256];
+		} uart;
+		struct {
+			int modulation;
+			int txdelay;
+			int pktlen;
+			unsigned char pkt[256];
+		} clipfsk;
+		struct {
+			int modulation;
+			int txdelay;
+			int pktlen;
+			unsigned char pkt[256];
+		} hdlc;
+		struct {
+			uint32_t capcode;
+			int cycle;
+			int frame;
+			int errors;
+			char message[256];
+		} flex;
+		struct {
+			uint32_t address;
+			int function;      /* 0=numeric, 1-3=alphanumeric */
+			int baud;          /* 512, 1200, or 2400 */
+			int errors;        /* Number of bit errors to inject (0-3) */
+			int invert;        /* Invert output polarity */
+			char message[256];
+		} pocsag;
+	} p;
+};
+
+struct gen_state {
+	union {
+		struct {
+			int ch_idx;
+			int ph_row, ph_col, phinc_row, phinc_col;
+			int time, time2;
+		} dtmf;
+		struct {
+			int ph, phinc;
+			int time;
+		} sine;
+		struct {
+			int ch_idx;
+			int ph, phinc;
+			int time, time2;
+		} zvei;
+		struct {
+			int ch_idx, bitmask;
+			unsigned int ph, phinc, bitph;
+			unsigned int datalen;
+			unsigned char data[512];
+		} uart;
+		struct {
+			int ch_idx, bitmask;
+			unsigned int ph, phinc, bitph;
+			unsigned int datalen;
+			unsigned char data[512];
+		} clipfsk;
+		struct {
+			int lastb;
+			int ch_idx, bitmask;
+			unsigned int ph, phinc, bitph;
+			unsigned int datalen;
+			unsigned char data[512];
+		} hdlc;
+		struct {
+			int bit_idx;
+			unsigned int bitph;
+			unsigned int datalen;
+			unsigned char data[4096];  /* One bit per byte for clarity */
+		} flex;
+		struct {
+			int bit_idx;
+			float bitph;
+			int baud;
+			unsigned int datalen;
+			unsigned char data[2048];
+		} pocsag;
+	} s;
+};
+
+extern void gen_init_dtmf(struct gen_params *p, struct gen_state *s);
+extern int gen_dtmf(signed short *buf, int buflen, struct gen_params *p, struct gen_state *s);
+
+extern void gen_init_sine(struct gen_params *p, struct gen_state *s);
+extern int gen_sine(signed short *buf, int buflen, struct gen_params *p, struct gen_state *s);
+
+extern void gen_init_zvei(struct gen_params *p, struct gen_state *s);
+extern int gen_zvei(signed short *buf, int buflen, struct gen_params *p, struct gen_state *s);
+
+extern void gen_init_uart(struct gen_params *p, struct gen_state *s);
+extern int gen_uart(signed short *buf, int buflen, struct gen_params *p, struct gen_state *s);
+
+extern void gen_init_clipfsk(struct gen_params *p, struct gen_state *s);
+extern int gen_clipfsk(signed short *buf, int buflen, struct gen_params *p, struct gen_state *s);
+
+extern void gen_init_hdlc(struct gen_params *p, struct gen_state *s);
+extern int gen_hdlc(signed short *buf, int buflen, struct gen_params *p, struct gen_state *s);
+
+extern void gen_init_flex(struct gen_params *p, struct gen_state *s);
+extern int gen_flex(signed short *buf, int buflen, struct gen_params *p, struct gen_state *s);
+
+extern void gen_init_pocsag(struct gen_params *p, struct gen_state *s);
+extern int gen_pocsag(signed short *buf, int buflen, struct gen_params *p, struct gen_state *s);
+
+/* Scope text generator - uses callback-based API */
+typedef void (*gen_write_t)(void *ctx, const short *samples, int count);
+extern void gen_init_scope(void);
+extern int gen_scope(const char *text, int txtlen, gen_write_t write_cb, void *ctx);
+

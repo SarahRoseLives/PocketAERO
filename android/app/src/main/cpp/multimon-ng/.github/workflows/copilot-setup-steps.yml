@@ -1,0 +1,46 @@
+# Copilot Setup Steps
+# This workflow prepares the environment for GitHub Copilot coding agent sessions.
+# It installs all necessary dependencies for building, testing, and cross-compiling multimon-ng.
+
+name: "Copilot Setup Steps"
+
+# Automatically run the setup steps when they are changed to allow for easy validation, and
+# allow manual testing through the repository's "Actions" tab
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+ # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+ copilot-setup-steps:
+   runs-on: ubuntu-latest
+
+   # Set the permissions to the lowest permissions possible needed for your steps.
+   # Copilot will be given its own token for its operations.
+   permissions:
+     # If you want to clone the repository as part of your setup steps, for example to install dependencies, you'll need the `contents: read` permission. If you don't clone the repository in your setup steps, Copilot will do this for you automatically after the steps complete.
+     contents: read
+
+   steps:
+     - name: Checkout repository
+       uses: actions/checkout@v6
+
+     - name: Install build dependencies
+       run: |
+         sudo dpkg --add-architecture i386
+         sudo apt-get update
+         sudo apt-get install -y wine32:i386
+         sudo apt-get install -y \
+           build-essential \
+           cmake \
+           sox \
+           libpulse-dev \
+           libx11-dev \
+           gcc-mingw-w64-i686 \
+           g++-mingw-w64-i686 \
+           gcc-mingw-w64-x86-64 \
+           g++-mingw-w64-x86-64 \
+           wine64 \
+           qt5-qmake
