@@ -1,19 +1,26 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 
 class VersionCheckService {
   static const _kUrl =
       'https://sarahsforge.dev/api/version.php?slug=pocketaero';
-  static const _kLocalVersion = '1.0.3';
 
+  String _localVersion = '';
   String _remoteVersion = '';
   bool _updateAvailable = false;
   String _productUrl = '';
 
   bool get updateAvailable => _updateAvailable;
   String get remoteVersion => _remoteVersion;
-  String get localVersion => _kLocalVersion;
+  String get localVersion => _localVersion;
   String get productUrl => _productUrl;
+
+  Future<void> init() async {
+    if (_localVersion.isNotEmpty) return;
+    final info = await PackageInfo.fromPlatform();
+    _localVersion = info.version;
+  }
 
   Future<void> check() async {
     try {
@@ -23,7 +30,7 @@ class VersionCheckService {
       _remoteVersion = (data['version'] as String?) ?? '';
       _productUrl = (data['product_url'] as String?) ?? '';
 
-      _updateAvailable = _compareVersions(_remoteVersion, _kLocalVersion) > 0;
+      _updateAvailable = _compareVersions(_remoteVersion, _localVersion) > 0;
     } catch (_) {
       // Network errors = no notification
     }

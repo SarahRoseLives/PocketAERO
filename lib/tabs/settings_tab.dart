@@ -1,13 +1,31 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../providers/theme_provider.dart';
 import '../providers/radio_provider.dart';
 import '../providers/aero_provider.dart';
 import '../models/waterfall_settings.dart';
 import '../services/version_check.dart';
 
-class SettingsTab extends StatelessWidget {
+class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
+  @override State<SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends State<SettingsTab> {
+  String _version = '...';
+  final _vc = VersionCheckService();
+
+  @override void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    await _vc.init();
+    if (mounted) setState(() => _version = info.version);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -130,9 +148,10 @@ class SettingsTab extends StatelessWidget {
 
         // ── About ───────────────────────────────────────────────────────
         _sectionHeader('About', Icons.info_outline, cs),
-        _tile(icon: Icons.info, title: 'Version', subtitle: '1.0.3',
+        _tile(icon: Icons.info, title: 'Version', subtitle: _version,
           trailing: TextButton(onPressed: () async {
             final vc = VersionCheckService();
+            await vc.init();
             await vc.check();
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
