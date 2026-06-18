@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/theme_provider.dart';
@@ -150,7 +151,7 @@ class _SettingsTabState extends State<SettingsTab> {
           trailing: TextButton(onPressed: () async {
             final vc = VersionCheckService();
             await vc.check();
-            if (context.mounted) {
+            if (kDebugMode && context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                 content: Text(vc.updateAvailable
                   ? 'Update available: v${vc.remoteVersion}'

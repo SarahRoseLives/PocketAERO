@@ -206,7 +206,7 @@ jaero_msk_demod_t *jaero_msk_create(double sample_rate, double symbol_rate, int 
     s.lockingbw = 2000.0;    /* ±1000 Hz for SDR PPM offset */
     s.coarsefreqest_fft_power = 13;
     s.symbolspercycle = (symbol_rate <= 600) ? 8 : 16;
-    s.signalthreshold = 0.6;
+    s.signalthreshold = 0.8;
 
     d->demod->setSettings(s);
     d->demod->setSoftBitsCallback(msk_bits_adapter, d);
@@ -305,7 +305,7 @@ jaero_oqpsk_demod_t *jaero_oqpsk_create(double sample_rate, double symbol_rate, 
     s.freq_center = 8000.0;
     s.lockingbw = 10500.0;
     s.coarsefreqest_fft_power = 13;
-    s.signalthreshold = 0.3;
+    s.signalthreshold = 0.5;
     s.channel_stereo = false;
 
     d->demod->setSettings(s);
@@ -434,7 +434,7 @@ jaero_pmsk_demod_t *jaero_pmsk_create(double sample_rate, double symbol_rate,
     s.lockingbw = (symbol_rate <= 600) ? 900.0 : 4800.0;  /* wider than JAERO default 1800 */
     s.coarsefreqest_fft_power = 15;  /* 32k FFT for better sensitivity (was 13) */
     s.symbolspercycle = (symbol_rate <= 600) ? 8 : 16;
-    s.signalthreshold = 0.25;  /* strict — locked only on strong P-channel (MSE<0.25 ≈ decodable) */
+    s.signalthreshold = 0.45;  /* relaxed — lock on weaker P-channel signals */
 
     d->demod->setSettings(s);
     d->demod->setSoftBitsCallback(pmsk_bits_adapter, d);
@@ -692,7 +692,7 @@ jaero_oqpsk_cont_demod_t *jaero_oqpsk_cont_create(double sample_rate, double sym
     double default_bw = (symbol_rate <= 8400) ? 5000.0 : 10500.0;
     s.lockingbw                = (oqpsk_lockingbw > 0) ? oqpsk_lockingbw : default_bw;
     s.coarsefreqest_fft_power  = 14;
-    s.signalthreshold          = 0.65; /* match JAERO default */
+    s.signalthreshold          = 0.6;
 
     d->demod->setSettings(s);
     d->demod->setSoftBitsCallback(oqpsk_cont_bits_adapter, d);

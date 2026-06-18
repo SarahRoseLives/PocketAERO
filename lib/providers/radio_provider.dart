@@ -151,6 +151,7 @@ class RadioProvider extends ChangeNotifier {
 
   void setFrequency(double hz) {
     _frequencyHz = hz.clamp(100_000, 6_000_000_000);
+    debugPrint('SET_FREQ: ${_frequencyHz.toInt()} Hz (${(_frequencyHz / 1e6).toStringAsFixed(4)} MHz)');
     _backend?.setFrequency(_frequencyHz.toInt());
     notifyListeners();
   }

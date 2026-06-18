@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -13,6 +14,7 @@ import 'services/sdr_ffi.dart';
 import 'tabs/waterfall_tab.dart';
 import 'tabs/sus_tab.dart';
 import 'tabs/acars_tab.dart';
+import 'tabs/aircraft_tab.dart';
 import 'tabs/cchannel_tab.dart';
 import 'tabs/settings_tab.dart';
 
@@ -61,7 +63,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   @override void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 6, vsync: this);
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging) setState(() {});
     });
@@ -112,7 +114,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _snack(String s) {
-    if (!mounted) return;
+    if (!kDebugMode || !mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(s), duration: const Duration(seconds: 2)));
   }
@@ -125,6 +127,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   @override Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final aero = context.watch<AeroProvider>();
 
     return Scaffold(
       body: SafeArea(
@@ -136,6 +139,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 WaterfallTab(),
                 SUsTab(),
                 AcarsTab(),
+                AircraftTab(),
                 CChannelTab(),
                 SettingsTab(),
               ],
@@ -151,12 +155,29 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             indicatorColor: cs.primary,
             labelColor: cs.primary,
             unselectedLabelColor: cs.onSurface.withValues(alpha: 0.5),
-            tabs: const [
-              Tab(icon: Icon(Icons.water_drop, size: 18), text: 'WFALL'),
-              Tab(icon: Icon(Icons.settings_input_antenna, size: 18), text: 'SUs'),
-              Tab(icon: Icon(Icons.text_snippet, size: 18), text: 'ACARS'),
-              Tab(icon: Icon(Icons.phone_in_talk, size: 18), text: 'C-CH'),
-              Tab(icon: Icon(Icons.settings, size: 18), text: 'SET'),
+            tabs: [
+              const Tab(icon: Icon(Icons.water_drop, size: 18), text: 'WFALL'),
+              Tab(icon: Badge(
+                label: Text('${aero.totalPchan}', style: const TextStyle(fontSize: 9)),
+                isLabelVisible: aero.totalPchan > 0,
+                child: const Icon(Icons.settings_input_antenna, size: 18),
+              ), text: 'SUs'),
+              Tab(icon: Badge(
+                label: Text('${aero.totalAcars}', style: const TextStyle(fontSize: 9)),
+                isLabelVisible: aero.totalAcars > 0,
+                child: const Icon(Icons.text_snippet, size: 18),
+              ), text: 'ACARS'),
+              Tab(icon: Badge(
+                label: Text('${aero.aircraft.length}', style: const TextStyle(fontSize: 9)),
+                isLabelVisible: aero.aircraft.isNotEmpty,
+                child: const Icon(Icons.flight, size: 18),
+              ), text: 'A/C'),
+              Tab(icon: Badge(
+                label: Text('${aero.totalCalls}', style: const TextStyle(fontSize: 9)),
+                isLabelVisible: aero.totalCalls > 0,
+                child: const Icon(Icons.phone_in_talk, size: 18),
+              ), text: 'C-CH'),
+              const Tab(icon: Icon(Icons.settings, size: 18), text: 'SET'),
             ],
           ),
         ]),

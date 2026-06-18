@@ -367,16 +367,10 @@ class _MeterPainter extends CustomPainter {
 ///  - Pre-computed colormap LUT (256 RGBA entries per scheme)
 class WaterfallDisplay extends StatefulWidget {
   final double? zoomBandwidthHz;
-  final double ncoOffsetHz;
-  final void Function(double hz)? onNcoDrag;
-  final VoidCallback? onNcoDragEnd;
 
   const WaterfallDisplay({
     super.key,
     this.zoomBandwidthHz,
-    this.ncoOffsetHz = 0,
-    this.onNcoDrag,
-    this.onNcoDragEnd,
   });
 
   @override
@@ -386,8 +380,9 @@ class WaterfallDisplay extends StatefulWidget {
 class _WaterfallDisplayState extends State<WaterfallDisplay> {
   double _dragStartFreqHz = 0;
   double _dragStartX = 0;
-  bool _ncoDragMode = false;
-  double _dragStartNcoHz = 0;
+  double _dragOffsetHz = 0;
+  bool _isDraggingRedLine = false;
+  static const _redLineGrabRadius = 30.0;
 
   // Ring buffer of FFT rows
   late List<Float32List> _rows;
@@ -438,56 +433,33 @@ class _WaterfallDisplayState extends State<WaterfallDisplay> {
   DateTime _lastTuneTime = DateTime.fromMillisecondsSinceEpoch(0);
   static const _tuneIntervalMs = 100; // max 10 Hz tuning during drag
 
-  void _onDragStart(DragStartDetails details, BoxConstraints constraints) {
-    final touchY = details.localPosition.dy;
-    final touchX = details.localPosition.dx;
-    final specH = constraints.maxHeight * 0.38;
-
-    final canvasW = constraints.maxWidth;
-    final ncoHz = widget.ncoOffsetHz;
-    final zoomHz = widget.zoomBandwidthHz;
-    final sr = (context.read<RadioProvider>().backend?.connectedType != null)
-        ? context.read<SdrService>().ffi.getSampleRate()
-        : context.read<RadioProvider>().wfSettings.sampleRateHz;
-    final spanHz = zoomHz ?? sr.toDouble();
-    final pixelsPerHz = canvasW / spanHz;
-    final redLineX = canvasW / 2 - ncoHz * pixelsPerHz;
-
-    const hitRadius = 36.0;
-    if (touchY < specH && (touchX - redLineX).abs() < hitRadius && widget.onNcoDrag != null) {
-      _ncoDragMode = true;
-      _dragStartNcoHz = ncoHz;
-      _dragStartX = touchX;
-    } else if (touchY >= specH) {
-      _ncoDragMode = false;
-      _dragStartFreqHz = context.read<RadioProvider>().frequencyHz;
-      _dragStartX = touchX;
+  int get _liveSampleRate {
+    final radio = context.read<RadioProvider>();
+    if (radio.backend is SdrService) {
+      final live = (radio.backend as SdrService).ffi.getSampleRate();
+      if (live > 0) return live;
     }
+    return radio.wfSettings.sampleRateHz;
+  }
+
+  void _onDragStart(DragStartDetails details, BoxConstraints constraints) {
+    _dragStartX = details.localPosition.dx;
+    _dragStartFreqHz = context.read<RadioProvider>().frequencyHz;
+    _isDraggingRedLine =
+        (details.localPosition.dx - constraints.maxWidth / 2).abs() < _redLineGrabRadius;
   }
 
   void _onDragUpdate(DragUpdateDetails details, BoxConstraints constraints) {
-    final now = DateTime.now();
-    if (now.difference(_lastTuneTime).inMilliseconds < _tuneIntervalMs) return;
-    _lastTuneTime = now;
-    final dx = details.localPosition.dx - _dragStartX;
+    final sr = _liveSampleRate.toDouble();
+    final spanHz = widget.zoomBandwidthHz ?? sr;
+    final hzPerPixel = spanHz / constraints.maxWidth;
 
-    if (_ncoDragMode) {
-      final zoomHz = widget.zoomBandwidthHz;
-      final sr = (context.read<RadioProvider>().backend?.connectedType != null)
-          ? context.read<SdrService>().ffi.getSampleRate()
-          : context.read<RadioProvider>().wfSettings.sampleRateHz;
-      final spanHz = zoomHz ?? sr.toDouble();
-      final hzPerPixel = spanHz / constraints.maxWidth;
-      final spreadHz = zoomHz ?? (sr / 2);
-      final newNco = (_dragStartNcoHz - dx * hzPerPixel)
-          .clamp(-spreadHz, spreadHz);
-      widget.onNcoDrag?.call(newNco);
+    if (_isDraggingRedLine) {
+      _dragOffsetHz = (constraints.maxWidth / 2 - details.localPosition.dx) * hzPerPixel;
+      _specNotifier.value++;
     } else {
+      final dx = details.localPosition.dx - _dragStartX;
       final radio = context.read<RadioProvider>();
-      final sr2 = (radio.backend?.connectedType != null)
-          ? context.read<SdrService>().ffi.getSampleRate()
-          : radio.wfSettings.sampleRateHz;
-      final hzPerPixel = sr2 / constraints.maxWidth;
       radio.setFrequency(_dragStartFreqHz - dx * hzPerPixel);
     }
   }
@@ -567,7 +539,7 @@ class _WaterfallDisplayState extends State<WaterfallDisplay> {
     // If zoomed, crop rows to only the centre portion
     final zoomHz = widget.zoomBandwidthHz;
     if (zoomHz != null && rowsSnap.isNotEmpty) {
-      final sr = settings.sampleRateHz.toDouble();
+      final sr = _liveSampleRate.toDouble();
       final ratio = (zoomHz / sr).clamp(0.01, 1.0);
       /* Some rows may have different lengths (mock 512 vs real 2048).
        * Use the minimum length so the crop doesn't index out of bounds. */
@@ -719,7 +691,19 @@ class _WaterfallDisplayState extends State<WaterfallDisplay> {
                 builder: (context, constraints) => GestureDetector(
                   onPanStart: (d) => _onDragStart(d, constraints),
                   onPanUpdate: (d) => _onDragUpdate(d, constraints),
-                  onPanEnd: (_) => widget.onNcoDragEnd?.call(),
+                  onPanEnd: (_) {
+                    if (_isDraggingRedLine && _dragOffsetHz != 0) {
+                      final radio = context.read<RadioProvider>();
+                      final targetFreq = _dragStartFreqHz - _dragOffsetHz;
+                      debugPrint('DRAG_END: startFreq=${_dragStartFreqHz.toStringAsFixed(0)} '
+                          'offsetHz=${_dragOffsetHz.toStringAsFixed(0)} '
+                          'targetFreq=${targetFreq.toStringAsFixed(0)}');
+                      radio.setFrequency(targetFreq);
+                    }
+                    _dragOffsetHz = 0;
+                    _isDraggingRedLine = false;
+                    _specNotifier.value++;
+                  },
                   onTapUp: (d) {
                     final w = constraints.maxWidth;
                     final radio = context.read<RadioProvider>();
@@ -740,7 +724,8 @@ class _WaterfallDisplayState extends State<WaterfallDisplay> {
                         settings:       radio.wfSettings,
                         centerFreqHz:   radio.frequencyHz.round(),
                         zoomBandwidthHz: widget.zoomBandwidthHz,
-                        ncoOffsetHz:    widget.ncoOffsetHz,
+                        ncoOffsetGetter: () => _dragOffsetHz,
+                        liveSampleRate:  _liveSampleRate,
                       ),
                     ),
                   ),
@@ -764,7 +749,8 @@ class _WaterfallCanvas extends StatelessWidget {
   final WaterfallSettings settings;
   final int centerFreqHz;
   final double? zoomBandwidthHz;
-  final double ncoOffsetHz;
+  final double Function() ncoOffsetGetter;
+  final int liveSampleRate;
 
   const _WaterfallCanvas({
     required this.spectrumGetter,
@@ -774,7 +760,8 @@ class _WaterfallCanvas extends StatelessWidget {
     required this.settings,
     required this.centerFreqHz,
     this.zoomBandwidthHz,
-    this.ncoOffsetHz = 0,
+    required this.ncoOffsetGetter,
+    required this.liveSampleRate,
   });
 
   @override
@@ -800,7 +787,8 @@ class _WaterfallCanvas extends StatelessWidget {
               settings: settings,
               centerFreqHz: centerFreqHz,
               zoomBandwidthHz: zoomBandwidthHz,
-              ncoOffsetHz: ncoOffsetHz,
+              ncoOffsetHz: ncoOffsetGetter(),
+              liveSampleRate: liveSampleRate,
             ),
             willChange: true,
           ),
@@ -843,6 +831,7 @@ class _SpectrumLinePainter extends CustomPainter {
   final int centerFreqHz;
   final double? zoomBandwidthHz;
   final double ncoOffsetHz;
+  final int liveSampleRate;
 
   const _SpectrumLinePainter({
     required this.spectrum,
@@ -850,6 +839,7 @@ class _SpectrumLinePainter extends CustomPainter {
     required this.centerFreqHz,
     this.zoomBandwidthHz,
     this.ncoOffsetHz = 0,
+    required this.liveSampleRate,
   });
 
   @override
@@ -879,7 +869,7 @@ class _SpectrumLinePainter extends CustomPainter {
 
     // ── Spectrum fill (max-pooling per display column) ────────────────────────
     final zoomHz = zoomBandwidthHz;
-    final sr     = settings.sampleRateHz.toDouble();
+    final sr     = liveSampleRate.toDouble();
     final spanHz = zoomHz ?? sr;
     final data   = spectrum!;
     final int N  = data.length;
@@ -1003,7 +993,8 @@ class _SpectrumLinePainter extends CustomPainter {
       old.settings != settings ||
       old.centerFreqHz != centerFreqHz ||
       old.zoomBandwidthHz != zoomBandwidthHz ||
-      old.ncoOffsetHz != ncoOffsetHz;
+      old.ncoOffsetHz != ncoOffsetHz ||
+      old.liveSampleRate != liveSampleRate;
 }
 
 // (Spectrum controls are in SpectrumControls widget in radio_controls.dart)

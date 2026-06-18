@@ -55,13 +55,13 @@ class WaterfallTab extends StatelessWidget {
   }
 
   void _snack(BuildContext context, String msg) {
-    if (!context.mounted) return;
+    if (!kDebugMode || !context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
   }
 
   void _snackErr(BuildContext context, String msg) {
-    if (!context.mounted) return;
+    if (!kDebugMode || !context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg),
         backgroundColor: Colors.red.shade800,
@@ -91,6 +91,19 @@ class WaterfallTab extends StatelessWidget {
           Text('${(radio.frequencyHz / 1e6).toStringAsFixed(6)} MHz',
             style: TextStyle(fontFamily: 'monospace', fontSize: freqSize,
               fontWeight: FontWeight.w700, color: cs.onSurface, letterSpacing: 1.5)),
+          if (aero.satelliteName.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.satellite_alt, size: rs.fontSize(12), color: Colors.amber),
+                SizedBox(width: rs.spacing(4)),
+                Text(aero.satelliteName,
+                  style: TextStyle(fontSize: rs.fontSize(11), fontWeight: FontWeight.w600,
+                    color: Colors.amber, letterSpacing: 0.5)),
+                Text('  ${aero.satelliteLon > 0 ? "${aero.satelliteLon.toStringAsFixed(1)}°E" : "${(-aero.satelliteLon).toStringAsFixed(1)}°W"}',
+                  style: TextStyle(fontSize: rs.fontSize(10), color: Colors.grey[500])),
+              ]),
+            ),
           pad6,
 
           SizedBox(
@@ -124,6 +137,20 @@ class WaterfallTab extends StatelessWidget {
             active: aero.biasTeeOn,
             activeColor: Colors.redAccent, activeBg: Colors.red.shade800,
             rs: rs, onPressed: running ? () => aero.toggleBiasTee(context) : null),
+          pad4,
+          _toggleChip(context,
+            icon: Icons.fiber_manual_record,
+            label: aero.recording ? 'REC IQ' : 'REC IQ',
+            active: aero.recording,
+            activeColor: Colors.redAccent, activeBg: Colors.red.shade900,
+            rs: rs, onPressed: (running && aero.aeroActive) ? () => aero.toggleRecording(context) : null),
+          pad4,
+          _toggleChip(context,
+            icon: Icons.fiber_manual_record,
+            label: aero.recordingRaw ? 'REC RAW' : 'REC RAW',
+            active: aero.recordingRaw,
+            activeColor: Colors.orangeAccent, activeBg: Colors.orange.shade900,
+            rs: rs, onPressed: running ? () => aero.toggleRecordingRaw(context, radio) : null),
           pad6,
 
           if (isTablet) ...[
@@ -158,12 +185,7 @@ class WaterfallTab extends StatelessWidget {
     );
 
     final wfWidget = aero.aeroActive
-        ? WaterfallDisplay(
-            zoomBandwidthHz: 50000,
-            ncoOffsetHz: kDebugMode ? aero.ncoOffset : 0,
-            onNcoDrag: kDebugMode ? (hz) => aero.setNcoOffset(hz) : null,
-            onNcoDragEnd: kDebugMode ? () => aero.commitNcoOffset() : null,
-          )
+        ? const WaterfallDisplay(zoomBandwidthHz: 50000)
         : const WaterfallDisplay();
 
     if (isTablet) {

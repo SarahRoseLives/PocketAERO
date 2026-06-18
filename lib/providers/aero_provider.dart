@@ -3,11 +3,62 @@ import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import '../services/aero_service.dart';
 import '../services/sdr_ffi.dart';
 import '../services/sdr_service.dart';
 import '../providers/radio_provider.dart';
+
+class _SatEntry {
+  final String name;
+  final double lonDeg;
+  const _SatEntry(this.name, this.lonDeg);
+}
+
+const _satellites = [
+  _SatEntry('I-4 F3 Americas',  -98.0),
+  _SatEntry('I-4 F2 EMEA',       64.0),
+  _SatEntry('I-4 F1 APAC',      143.5),
+  _SatEntry('Alphasat',           25.0),
+];
+
+String _identifySatellite(double lonDeg) {
+  String best = 'Unknown';
+  double bestDist = 999;
+  for (final s in _satellites) {
+    double d = (lonDeg - s.lonDeg).abs();
+    if (d > 180) d = 360 - d;
+    if (d < bestDist) { bestDist = d; best = s.name; }
+  }
+  return best;
+}
+
+final _satIdRe = RegExp(r'SatID=(\d+)');
+final _satLonRe = RegExp(r'Long=([0-9.]+)([EW])');
+
+class AircraftEntry {
+  final String aesId;
+  final Set<int> gesIds = {};
+  final Set<String> messageTypes = {};
+  int messageCount = 0;
+  DateTime firstSeen;
+  DateTime lastSeen;
+  String lastSuType = '';
+
+  AircraftEntry({required this.aesId})
+      : firstSeen = DateTime.now(),
+        lastSeen = DateTime.now();
+
+  void update(AeroMessage msg) {
+    lastSeen = DateTime.now();
+    messageCount++;
+    if (msg.gesId > 0) gesIds.add(msg.gesId);
+    final t = msg.callType.isNotEmpty ? msg.callType : msg.suType;
+    messageTypes.add(t);
+    lastSuType = t;
+  }
+}
 
 class AeroProvider extends ChangeNotifier {
   final AeroService _aeroService;
@@ -21,12 +72,17 @@ class AeroProvider extends ChangeNotifier {
   bool _voiceFollow = false;
   double _prevPchanFreq = 0;
   double _prevPchanRate = 0;
+  String _satelliteName = '';
+  double _satelliteLon = 0;
+  int _satelliteId = -1;
 
   final List<AeroMessage> _messages = [];
   final List<AeroMessage> _acarsMessages = [];
   StreamSubscription<AeroMessage>? _msgSub;
   int _totalAcars = 0;
   int _totalPchan = 0;
+  int _totalCalls = 0;
+  final Map<String, AircraftEntry> _aircraft = {};
 
   static const int _maxAcars = 500;
   static const int _maxPchan = 300;
@@ -37,6 +93,7 @@ class AeroProvider extends ChangeNotifier {
 
   int get totalAcars => _totalAcars;
   int get totalPchan => _totalPchan;
+  int get totalCalls => _totalCalls;
 
   /// ACARS-only messages (never trimmed by PCHAN flood)
   List<AeroMessage> get acarsMessages => _acarsMessages;
@@ -53,12 +110,32 @@ class AeroProvider extends ChangeNotifier {
       debugPrint('ACARS_IN: aes=${msg.aesId} len=${msg.length} total=$_totalAcars buf=${_acarsMessages.length}');
     } else if (msg.suType == 'PCHAN' || msg.suType == 'VASSIGN') {
       _totalPchan++;
+      if (msg.callType == 'SAT_ID') {
+        final idM = _satIdRe.firstMatch(msg.hexBytes);
+        final lonM = _satLonRe.firstMatch(msg.hexBytes);
+        if (lonM != null) {
+          double lon = double.tryParse(lonM.group(1)!) ?? 0;
+          if (lonM.group(2) == 'W') lon = -lon;
+          _satelliteLon = lon;
+          _satelliteId = int.tryParse(idM?.group(1) ?? '') ?? -1;
+          _satelliteName = _identifySatellite(lon);
+          debugPrint('SAT_AUTO_ID: id=$_satelliteId lon=$lon → $_satelliteName');
+        }
+      }
+    } else if (msg.suType == 'CALL') {
+      _totalCalls++;
     }
 
     _messages.add(msg);
     if (_messages.length > 500) {
       _messages.removeRange(0, 200);
     }
+
+    if (msg.aesId.isNotEmpty && msg.aesId != '000000') {
+      _aircraft.putIfAbsent(msg.aesId, () => AircraftEntry(aesId: msg.aesId));
+      _aircraft[msg.aesId]!.update(msg);
+    }
+
     notifyListeners();
   }
 
@@ -74,6 +151,10 @@ class AeroProvider extends ChangeNotifier {
   double get prevPchanFreq => _prevPchanFreq;
   AeroService get service => _aeroService;
   List<AeroMessage> get messages => _messages;
+  String get satelliteName => _satelliteName;
+  double get satelliteLon => _satelliteLon;
+  int get satelliteId => _satelliteId;
+  Map<String, AircraftEntry> get aircraft => _aircraft;
 
   // ── AERO toggle ──────────────────────────────────────────────────────
 
@@ -92,6 +173,7 @@ class AeroProvider extends ChangeNotifier {
       _snack(context, 'AERO decoder stopped');
     }
     notifyListeners();
+    context.read<RadioProvider>().notifyListeners();
   }
 
   void stopAero(BuildContext context) {
@@ -102,6 +184,7 @@ class AeroProvider extends ChangeNotifier {
     _prevPchanFreq = 0; _prevPchanRate = 0;
     _snack(context, 'AERO decoder stopped');
     notifyListeners();
+    context.read<RadioProvider>().notifyListeners();
   }
 
   // ── Bias tee ─────────────────────────────────────────────────────────
@@ -118,10 +201,11 @@ class AeroProvider extends ChangeNotifier {
   void setSymbolRate(double rate, BuildContext context) {
     _symbolRate = rate;
     SdrFfi.instance.setAeroSymbolRate(_symbolRate);
-    SdrFfi.instance.setAeroOffset(_ncoOffset); // re-apply NCO after rate change
-    SdrFfi.instance.setAeroOffsetCommit(_ncoOffset); // re-center demod
+    SdrFfi.instance.setAeroOffset(_ncoOffset);
+    SdrFfi.instance.setAeroOffsetCommit(_ncoOffset);
     _snack(context, 'Symbol rate: ${rate.toInt()} baud');
     notifyListeners();
+    context.read<RadioProvider>().notifyListeners();
   }
 
   // ── NCO offset ───────────────────────────────────────────────────────
@@ -248,13 +332,13 @@ class AeroProvider extends ChangeNotifier {
   // ── Helpers ──────────────────────────────────────────────────────────
 
   void _snack(BuildContext context, String msg) {
-    if (!context.mounted) return;
+    if (!kDebugMode || !context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
   }
 
   void _snackErr(BuildContext context, String msg) {
-    if (!context.mounted) return;
+    if (!kDebugMode || !context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg),
         backgroundColor: Colors.red.shade800,

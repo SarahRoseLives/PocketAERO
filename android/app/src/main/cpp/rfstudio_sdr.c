@@ -175,7 +175,7 @@ static jaero_pmsk_demod_t        *g_aero_pmsk  = NULL;
 static double      g_aero_symbol_rate = 10500.0;  /* 10500=ACARS, 8400=voice, 600/1200=MSK */
 static int          g_aero_running = 0;
 static int          g_aero_feed_iq_mode = 1; /* 0=feedAudio (Hilbert), 1=feedIQ (JAERO's Hilbert) — default feedIQ */
-static int          g_aero_boxcar_mode = 1; /* 0=halfband cascade (broken), 1=simple boxcar averaging — default boxcar */
+static int          g_aero_boxcar_mode = 0; /* 0=halfband cascade, 1=boxcar — auto-set by symbol rate */
 static int          g_aero_recording = 0;
 static FILE        *g_aero_rec_file = NULL;
 static long         g_aero_rec_samples = 0;
@@ -475,6 +475,12 @@ static void _aero_decoded_cb(const uint8_t *data, int len, void *user)
             }
             if (!type_name) type_name = "UNK";
 
+            char unk_buf[16];
+            if (msg != 0x01 && type_name[0] == 'U') {
+                snprintf(unk_buf, sizeof(unk_buf), "UNK_0x%02X", msg);
+                type_name = unk_buf;
+            }
+
             /* Extract voice channel frequency for C_ASSIGN only (T_ASSIGN uses
              * a different encoding — frequency comes from system table). */
             double rx_mhz = 0.0, tx_mhz = 0.0;
@@ -659,8 +665,9 @@ static void _aero_feed_iq(const uint8_t *iq, int n_iq_pairs)
             _hb_ring_q[0][_hb_ridx[0]] = xq;
             _hb_ridx[0] = (_hb_ridx[0] + 1) % HB_TAPS;
 
-            /* Stage 0: halfband output toggle */
-            if (!_hb_skip[0]) {
+            /* Stage 0: halfband 2:1 decimation */
+            int s0_out = !_hb_skip[0];
+            if (s0_out) {
                 double out_i = 0.0, out_q = 0.0;
                 int p = _hb_ridx[0];
                 for (int j = 0; j < HB_TAPS; j++) {
@@ -672,17 +679,16 @@ static void _aero_feed_iq(const uint8_t *iq, int n_iq_pairs)
             }
             _hb_skip[0] = !_hb_skip[0];
 
-            /* Stages 1-3: identical halfband + decimate.
-             * Each stage inserts xi/xq into its ring, computes FIR every other
-             * insertion, and saves its own output.  The saved output (not the
-             * input xi) is forwarded to the next stage so skip cycles don't
-             * leak a lower stage's value into a higher stage's ring. */
-            for (int s = 1; s < HB_STAGES && !_hb_skip[s-1]; s++) {
+            /* Stages 1-3: cascade — only feed when previous stage produced output.
+             * Check pre-toggle state via separate flag to avoid the inversion bug. */
+            int emit = s0_out;
+            for (int s = 1; s < HB_STAGES && emit; s++) {
                 _hb_ring_i[s][_hb_ridx[s]] = xi;
                 _hb_ring_q[s][_hb_ridx[s]] = xq;
                 _hb_ridx[s] = (_hb_ridx[s] + 1) % HB_TAPS;
 
-                if (!_hb_skip[s]) {
+                int this_out = !_hb_skip[s];
+                if (this_out) {
                     double out_i = 0.0, out_q = 0.0;
                     int p = _hb_ridx[s];
                     for (int j = 0; j < HB_TAPS; j++) {
@@ -695,15 +701,20 @@ static void _aero_feed_iq(const uint8_t *iq, int n_iq_pairs)
                 }
                 _hb_skip[s] = !_hb_skip[s];
 
-                /* Forward the SAVED output of this stage (not the input xi).
-                 * On a skip cycle this correctly restores the last FIR output. */
                 xi = _hb_out_i[s];
                 xq = _hb_out_q[s];
+                emit = this_out;
             }
 
             /* After HB stages: AERO demod — feedIQ or feedAudio */
-            if (!_hb_skip[HB_STAGES-1]) {
+            if (emit) {
                 float hi = xi, hq = xq;
+
+                static int64_t hb_emit_count = 0;
+                if (++hb_emit_count % 64000 == 0)
+                    LOGI("HB_EMIT: %lldK samples, hi=%.4f hq=%.4f rms=%.4f",
+                         (long long)hb_emit_count/1000, hi, hq,
+                         sqrtf(hi*hi + hq*hq));
 
                 /* WAV recording: capture post-halfband IQ (NCO-shifted, USB overlay bandwidth) */
                 if (g_aero_recording && g_aero_rec_file) {
@@ -839,8 +850,38 @@ static void _aero_feed_iq(const uint8_t *iq, int n_iq_pairs)
                     g_aero_rec_samples++;
                 }
 
-                /* Feed to JAERO — always use feedIQ in boxcar mode */
-                {
+                /* Feed to JAERO — feedIQ or feedAudio (Hilbert USB) */
+                if (!g_aero_feed_iq_mode) {
+                    /* SDRReceiver-compatible 81-tap Hilbert USB demod.
+                     * Produces real int16 audio at the boxcar output rate.
+                     * DC is inherently suppressed — no DC spike at centre. */
+                    _hilb_buff[_hilb_ptr] = hi;
+                    _hilb_buff[_hilb_ptr + HILB_TAPS] = hi;
+                    int start = _hilb_ptr + 1;
+                    if (start >= HILB_TAPS) start = 0;
+                    float *b = &_hilb_buff[start];
+                    float acc = 0.0f;
+                    for (int ii = 1; ii <= HILB_DELAY; ii += 2)
+                        acc += _hilb_pts[ii] * (b[HILB_DELAY + ii] - b[HILB_DELAY - ii]);
+                    _hilb_ptr++;
+                    if (_hilb_ptr >= HILB_TAPS) _hilb_ptr = 0;
+
+                    _hilb_delay[_hilb_didx] = hq;
+                    _hilb_didx = (_hilb_didx + 1) % (HILB_DELAY + 1);
+                    float delayed_q = _hilb_delay[_hilb_didx];
+                    float usb = delayed_q + acc;
+                    int16_t audio = (int16_t)(usb * 5.0f * 32768.0f);
+                    if (audio > 32767) audio = 32767;
+                    else if (audio < -32768) audio = -32768;
+
+                    static int16_t abuf[4096];
+                    static int acnt = 0;
+                    abuf[acnt++] = audio;
+                    if (acnt >= 4096) {
+                        _aero_feed_demod_audio(abuf, acnt);
+                        acnt = 0;
+                    }
+                } else {
                     static double iq_fb[512]; static int iq_fc = 0;
                     iq_fb[iq_fc*2] = (double)hi; iq_fb[iq_fc*2+1] = (double)hq;
                     iq_fc++;
@@ -1135,6 +1176,14 @@ static void _aero_async_cb(unsigned char *buf, uint32_t len_bytes, void *ctx)
         for (int i = 0; i < fft_n; i++) {
             float p  = c->acc[i] * inv;
             c->tmp[i] = (p > 1e-30f) ? 10.0f * log10f(p) : MIN_DB;
+        }
+
+        /* Fill the DC-blocker notch: interpolate the centre bin from neighbours
+           so the waterfall doesn't show a persistent dark line at DC. */
+        {
+            int dc = fft_n / 2;
+            if (dc > 0 && dc < fft_n - 1)
+                c->tmp[dc] = (c->tmp[dc - 1] + c->tmp[dc + 1]) * 0.5f;
         }
 
         /* Signal level: peak over centre 25% */
@@ -1780,6 +1829,11 @@ static void *_wfm_thread_fn(void *arg)
                     float p = acc_buf[i] * inv;
                     tmp_buf[i] = (p > 1e-30f) ? 10.0f * log10f(p) : MIN_DB;
                 }
+                {
+                    int dc = g_fft_size / 2;
+                    if (dc > 0 && dc < g_fft_size - 1)
+                        tmp_buf[dc] = (tmp_buf[dc - 1] + tmp_buf[dc + 1]) * 0.5f;
+                }
                 pthread_mutex_lock(&g_fft_mtx);
                 memcpy(g_fft_out, tmp_buf, (size_t)g_fft_size * sizeof(float));
                 g_fft_cnt++;
@@ -1885,28 +1939,30 @@ int32_t rf_start_aero(void) {
     if (rate == 0) rate = DEFAULT_SAMPLE_RATE;
     g_aero_rate  = (int)rate;
 
-    /* Set boxcar decimation for target audio rate:
-     *   MSK (≤1200 bps): target 48000 Hz, exact for IIR resonator
-     *   OQPSK (>1200 bps): target 64000 Hz */
+    /* Set decimation for target audio rate:
+     *   MSK (≤1200 bps): boxcar 50:1 from 2.4 MHz → 48 kHz
+     *   OQPSK (>1200 bps): halfband 16:1 from 1.024 MHz → 64 kHz */
     if (g_aero_symbol_rate <= 1200.0) {
-        /* MSK path needs exactly 48 kHz. Use RTL at 2.4M → 2400000/50 = 48000 */
         uint32_t msk_rate = 2400000;
         rtlsdr_set_sample_rate(g_dev, msk_rate);
         rate = msk_rate;
         g_aero_rate = (int)rate;
         g_aero_boxcar_n = 50;
+        g_aero_boxcar_mode = 1;
         LOGI("MSK: set RTL to %u Hz, boxcar %d:1 → 48000 Hz",
              msk_rate, g_aero_boxcar_n);
     } else {
-        g_aero_boxcar_n = 16;
         g_aero_rate = (int)rate;
+        g_aero_boxcar_mode = 0;
+        LOGI("OQPSK: halfband 16:1 → %d Hz", g_aero_rate / 16);
     }
-    /* Halfband decimation = 2^HB_STAGES (e.g. 4 stages → 16:1) */
-    g_aero_decim = 1 << HB_STAGES;
-    double audio_rate = (double)g_aero_rate / (double)g_aero_boxcar_n;
-
-    /* 4-stage halfband 2:1 decimation (SDRReceiver hbcoeff23) + NCO at 8 kHz IF */
+    g_aero_boxcar_n = g_aero_boxcar_mode ? g_aero_boxcar_n : 16;
     _aero_init_hb();
+    g_aero_decim = 1 << HB_STAGES;
+    double audio_rate = g_aero_boxcar_mode
+        ? (double)g_aero_rate / (double)g_aero_boxcar_n
+        : (double)g_aero_rate / (double)(1 << HB_STAGES);
+
     double inc = 2.0 * 3.14159265358979 * 0.0 / (double)g_aero_rate;
     _nco_ci = cos(inc);
     _nco_si = sin(inc);
@@ -2036,19 +2092,26 @@ void rf_set_aero_symbol_rate(double rate) {
     if (g_aero_pmsk)  { jaero_pmsk_destroy(g_aero_pmsk);          g_aero_pmsk  = NULL; }
     g_aero_msg_len = 0;
 
-    /* Adjust RTL sample rate and boxcar decimation for target audio rate */
+    /* Adjust RTL sample rate and decimation */
     uint32_t new_rate = DEFAULT_SAMPLE_RATE;
     if (rate <= 1200.0) {
         new_rate = 2400000;
-        g_aero_boxcar_n = 50;  /* 2400000/50 = 48000 Hz for MSK */
+        g_aero_boxcar_n = 50;
+        g_aero_boxcar_mode = 1;
+        LOGI("RATE_SW: MSK boxcar 50:1 → 48 kHz");
     } else {
-        g_aero_boxcar_n = 16;  /* 1024000/16 = 64000 Hz for OQPSK */
+        g_aero_boxcar_n = 16;
+        g_aero_boxcar_mode = 0;
+        _aero_init_hb();
+        LOGI("RATE_SW: OQPSK halfband 16:1 → 64 kHz");
     }
     if (g_dev) {
         rtlsdr_set_sample_rate(g_dev, new_rate);
         g_aero_rate = (int)new_rate;
     }
-    double audio_rate = (double)g_aero_rate / (double)g_aero_boxcar_n;
+    double audio_rate = g_aero_boxcar_mode
+        ? (double)g_aero_rate / (double)g_aero_boxcar_n
+        : (double)g_aero_rate / (double)(1 << HB_STAGES);
     if (rate <= 1200.0) {
         g_aero_pmsk = jaero_pmsk_create(audio_rate, rate, 0,
                                          _aero_soft_bits_cb, NULL);
@@ -2082,7 +2145,9 @@ int32_t rf_start_aero_recording(const char *path) {
     g_aero_rec_file = fopen(path, "wb");
     if (!g_aero_rec_file) { LOGE("rec: cannot open %s", path); return -1; }
 
-    g_aero_rec_rate    = g_aero_rate / g_aero_boxcar_n;  /* e.g. 64000 Hz or 48000 Hz */
+    g_aero_rec_rate    = g_aero_boxcar_mode
+        ? g_aero_rate / g_aero_boxcar_n
+        : g_aero_rate / (1 << HB_STAGES);
     g_aero_rec_samples = 0;
 
     /* WAV header with placeholder file/data sizes */
@@ -2181,38 +2246,35 @@ int32_t rf_stop_aero_recording_raw(void) {
 }
 
 /* Set NCO mixing frequency offset (Hz) */
+/* Set NCO mixing frequency offset (Hz).
+ * The NCO shifts IQ by -hz to bring the signal at the red-line position
+ * to baseband DC (0 Hz). feedIQ then upconverts to 8000 Hz audio where
+ * the demod expects it. Like SDRPlusPlus's RxVFO, the demod is never
+ * touched — the NCO handles all frequency shifting.
+ *
+ * DO NOT reset _nco_c/_nco_s here — called every ~100ms during drag.
+ * Phasor drift is << 1e-6 over minutes; reset only on commit. */
 void rf_set_aero_offset(double hz) {
     double inc = 2.0 * 3.14159265358979 * hz / (double)g_aero_rate;
     _nco_ci = cos(inc);
     _nco_si = sin(inc);
-    /* DO NOT reset _nco_c/_nco_s here — this is called every ~100ms
-     * during drag. Resetting the phasor on every call causes a phase
-     * jump that corrupts the constellation and prevents decode.
-     * Phasor drift is << 1e-6 over minutes; reset only on commit. */
 }
 
 void rf_set_aero_offset_commit(double hz) {
     double inc = 2.0 * 3.14159265358979 * hz / (double)g_aero_rate;
     _nco_ci = cos(inc);
     _nco_si = sin(inc);
-    _nco_c = 1.0;  /* reset phasor to match rf_set_aero_offset */
-    _nco_s = 0.0;
+    _nco_c = 1.0; _nco_s = 0.0;
     double audio_hz = 8000.0 + hz;
     if (g_aero_pmsk) {
         jaero_pmsk_set_manual_tune(g_aero_pmsk, audio_hz);
         jaero_pmsk_set_afc(g_aero_pmsk, 1);
     }
     if (g_aero_demod) {
-        /* setManualTune calls bigchange() — resets coarsefreqestimate and
-         * forces clean re-acquisition at the new audio frequency. This is
-         * exactly what we want on commit (drag end). AFC re-enables after. */
         jaero_oqpsk_cont_set_manual_tune(g_aero_demod, audio_hz);
-        double mc=0, fc=0, fs=0;
-        jaero_oqpsk_cont_get_tune_info(g_aero_demod, &mc, &fc, &fs);
-        LOGI("AERO VFO commit: OQPSK hz=%.0f mixer=%.0f", hz, mc);
+        LOGI("AERO VFO commit: hz=%.0f audio=%.0f", hz, audio_hz);
     }
 }
-
 /* ── WAV file decode (test mode) ─────────────────────────────────────────── */
 int32_t rf_load_wav_aero(const char *path) {
     if (!path) return -1;
