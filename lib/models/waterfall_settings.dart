@@ -32,7 +32,7 @@ class WaterfallSettings {
     this.minDb         = -44.0,
     this.maxDb         = -22.0,
     this.waterfallRows = 250,
-    this.colorScheme   = WaterfallColorScheme.viridis,
+    this.colorScheme   = WaterfallColorScheme.classic,
   });
 
   bool get autoGain => gainTenths < 0;
