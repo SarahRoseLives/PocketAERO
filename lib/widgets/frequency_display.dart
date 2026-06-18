@@ -587,8 +587,12 @@ class _WaterfallDisplayState extends State<WaterfallDisplay> {
       final rLen = row.length;
       final base = r * w * 4;
       for (int x = 0; x < w; x++) {
-        final binIdx = (x * rLen / w).toInt().clamp(0, rLen - 1);
-        final v  = ((row[binIdx] - minDb) / range).clamp(0.0, 1.0);
+        final idx = x * rLen / w;
+        final lo = idx.toInt().clamp(0, rLen - 1);
+        final hi = (lo + 1).clamp(0, rLen - 1);
+        final frac = idx - lo;
+        final sample = row[lo] * (1.0 - frac) + row[hi] * frac;
+        final v  = ((sample - minDb) / range).clamp(0.0, 1.0);
         final ci = (v * 255).toInt();
         final c  = lut[ci];
         final pi = base + x * 4;
@@ -614,6 +618,8 @@ class _WaterfallDisplayState extends State<WaterfallDisplay> {
           return _viridis(t);
         case WaterfallColorScheme.turbo:
           return _turbo(t);
+        case WaterfallColorScheme.classic:
+          return _classic(t);
         case WaterfallColorScheme.grayscale:
           final v = (t * 255).round();
           return (v << 16) | (v << 8) | v;
@@ -630,10 +636,23 @@ class _WaterfallDisplayState extends State<WaterfallDisplay> {
   }
 
   static int _turbo(double t) {
-    // Approximation of Google turbo colormap
     final r = (0.139 + 4.189 * t - 8.540 * t * t + 5.106 * t * t * t).clamp(0.0, 1.0);
     final g = (0.097 + 3.671 * t - 3.956 * t * t + 0.218 * t * t * t).clamp(0.0, 1.0);
     final b = (0.453 + 3.107 * t - 8.010 * t * t + 5.293 * t * t * t).clamp(0.0, 1.0);
+    return (_f(r) << 16) | (_f(g) << 8) | _f(b);
+  }
+
+  static int _classic(double t) {
+    const stops = [0.0, 0.3, 0.55, 0.8, 1.0];
+    const rs = [0.05, 0.1, 0.9, 1.0, 1.0];
+    const gs = [0.15, 0.4, 0.6, 0.3, 0.05];
+    const bs = [0.55, 0.8, 0.1, 0.0, 0.0];
+    int i = 0;
+    while (i < stops.length - 2 && t > stops[i + 1]) i++;
+    final f = (t - stops[i]) / (stops[i + 1] - stops[i]);
+    final r = (rs[i] + f * (rs[i + 1] - rs[i])).clamp(0.0, 1.0);
+    final g = (gs[i] + f * (gs[i + 1] - gs[i])).clamp(0.0, 1.0);
+    final b = (bs[i] + f * (bs[i + 1] - bs[i])).clamp(0.0, 1.0);
     return (_f(r) << 16) | (_f(g) << 8) | _f(b);
   }
 

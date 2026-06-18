@@ -1,6 +1,6 @@
 // lib/models/waterfall_settings.dart
 
-enum WaterfallColorScheme { viridis, turbo, grayscale }
+enum WaterfallColorScheme { viridis, turbo, classic, grayscale }
 
 enum FftSize {
   s512(512, '512'),

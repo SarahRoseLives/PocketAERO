@@ -344,6 +344,18 @@ List<int> _buildMiniLut(WaterfallColorScheme scheme) {
         final g = (0.097 + 3.671 * t - 3.956 * t * t + 0.218 * t * t * t).clamp(0.0, 1.0);
         final b = (0.453 + 3.107 * t - 8.010 * t * t + 5.293 * t * t * t).clamp(0.0, 1.0);
         return (_f(r) << 16) | (_f(g) << 8) | _f(b);
+      case WaterfallColorScheme.classic:
+        const stops = [0.0, 0.3, 0.55, 0.8, 1.0];
+        const rs = [0.05, 0.1, 0.9, 1.0, 1.0];
+        const gs = [0.15, 0.4, 0.6, 0.3, 0.05];
+        const bs = [0.55, 0.8, 0.1, 0.0, 0.0];
+        int j = 0;
+        while (j < stops.length - 2 && t > stops[j + 1]) j++;
+        final f2 = (t - stops[j]) / (stops[j + 1] - stops[j]);
+        final r = (rs[j] + f2 * (rs[j + 1] - rs[j])).clamp(0.0, 1.0);
+        final g = (gs[j] + f2 * (gs[j + 1] - gs[j])).clamp(0.0, 1.0);
+        final b = (bs[j] + f2 * (bs[j + 1] - bs[j])).clamp(0.0, 1.0);
+        return (_f(r) << 16) | (_f(g) << 8) | _f(b);
       case WaterfallColorScheme.grayscale:
         final v = (t * 255).round();
         return (v << 16) | (v << 8) | v;
